@@ -8,7 +8,8 @@ import Brick.Widgets.Border.Style as Export
 import Brick.Widgets.Center as Export (vCenter, center)
 import Brick.Widgets.Edit  as Export (editor , editorText, renderEditor, Editor, handleEditorEvent, getEditContents, applyEdit )
 import Brick.Widgets.List as Export (List, list ,handleListEvent, handleListEventVi, listAttr, listSelectedAttr, listSelectedElement , listSelectedL
-                                    ,listReplace , renderListWithIndex, renderList , listElements, GenericList (listElements, listSelected))
+                                    ,listReplace , listElements, GenericList (listElements, listSelected))
+import qualified Brick.Widgets.List as L
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
 import Graphics.Vty.Config (Config(inputFd))
 import Graphics.Vty.Input.Events as Export 
@@ -48,3 +49,32 @@ theMain :: Ord n => App b e n -> BChan e -> b -> IO b
 theMain a b s = (\v -> customMain v (pure v) (Just b) a s) =<< mkVty =<<(\c -> (\fd -> c {inputFd = Just fd}) <$> termFd) =<< standardIOConfig
   where
     termFd = (\f -> openFd f ReadOnly Nothing (OpenFileFlags False False False False False)) =<< getControllingTerminalName
+
+drawListElements :: (Ord n, Show n, Foldable t, L.Splittable t) => Bool -> GenericList n t a -> (Int -> Bool -> a -> Widget n) -> Widget n
+drawListElements foc l drawElem =
+    Widget Greedy Greedy $ do
+        c <- getContext
+        let es = L.slice start (numPerHeight * 2) (l^.L.listElementsL)
+            idx = fromMaybe 0 (l^.listSelectedL)
+            start = max 0 $ idx - numPerHeight + 1
+            numPerHeight = 1 + (c^.availHeightL - 1) `div` (l^. L.listItemHeightL)
+            off = start * (l^. L.listItemHeightL)
+            drawElement j e =
+                let isSelected = Just j == l^.listSelectedL
+                    elemWidget = drawElem j isSelected e
+                    selItemAttr = if foc
+                                  then withDefAttr L.listSelectedFocusedAttr
+                                  else withDefAttr listSelectedAttr
+                    makeVisible = if isSelected
+                                  then visible . selItemAttr
+                                  else id
+                in makeVisible elemWidget
+        render $ viewport (l^.L.listNameL) Vertical $
+                 translateBy (Location (0, off)) $
+                 vBox $ zipWith drawElement [start .. ] . toList $ es
+
+renderListWithIndex :: (Ord n, Show n, Foldable t, L.Splittable t) => (Int -> Bool -> a -> Widget n) -> Bool -> GenericList n t a -> Widget n
+renderListWithIndex drawElem foc l = withDefAttr listAttr $ drawListElements foc l drawElem
+
+renderList :: (Foldable t, L.Splittable t, Ord n, Show n) => (Bool -> e -> Widget n) -> Bool -> GenericList n t e -> Widget n
+renderList drawElem = renderListWithIndex $ const drawElem
