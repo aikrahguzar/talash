@@ -10,7 +10,6 @@ module Talash.Utils ( -- * Search
                    , module Export ) where
 
 import Control.Exception as Export (finally , catch, bracket , AsyncException)
-import Data.Compact (Compact , compact , getCompact)
 import qualified Data.Text as T
 import Data.Text.AhoCorasick.Automaton (CaseSensitivity (..))
 import qualified Data.Text.IO as T
