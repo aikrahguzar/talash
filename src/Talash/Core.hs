@@ -11,9 +11,9 @@ module Talash.Core ( -- * Types
                      -- * Matchers and matching
                      , makeMatcher
                      -- ** Fuzzy style
-                     , fuzzyMatcherSized , fuzzyMatcher , fuzzyMatchSized , fuzzyMatch
+                     , fuzzyMatcherSized , fuzzyMatcher , fuzzyMatchSized , fuzzyMatch , fuzzyMatchParts
                      -- ** Orderless Style
-                     , orderlessMatcherSized , orderlessMatcher , orderlessMatchSized , orderlessMatch
+                     , orderlessMatcherSized , orderlessMatcher , orderlessMatchSized , orderlessMatch , orderlessMatchParts
                      -- * Search
                      , fuzzySettings , orderlessSettings  ,  searchSome , parts , partsOrderless , minify) where
 
@@ -25,6 +25,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as M
+import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeNats
 import Prelude (fromIntegral)
@@ -99,13 +100,12 @@ matchScore u v
 
 {-# INLINEABLE matchStepFuzzy #-}
 matchStepFuzzy :: KnownNat n => Either Int (S.Vector n Int) -> MatchState n () -> Match MatchPart -> Next (MatchState n ())
-matchStepFuzzy l s@(MatchState !f !m _) (Match !i (MatchPart !b !e))
-  | e - b == either id S.length l - 1                             = Done $ updateMatch (codeUnitIndex i) l s b e ()
-  | f + 1 == b                                                    = Step $ updateMatch (codeUnitIndex i) l s b e ()
-  | f >= b && e > f && monotonic                                  = Step $ updateMatch (codeUnitIndex i) l s b e ()
-  | otherwise                                                     = Step   s
+matchStepFuzzy l s@(MatchState !f !m _) (Match (CodeUnitIndex !i) (MatchPart !b !e))
+  | e - b == either id S.length l - 1              = Done $ updateMatch i l s b e ()
+  | (f + 1 == b || f >= b && e > f) && monotonic   = Step $ updateMatch i l s b e ()
+  | otherwise                                      = Step   s
   where
-    monotonic = S.unsafeIndex m f <= codeUnitIndex i - either (const $ e-f) (U.sum . U.slice f (e-f) . S.fromSized) l
+    monotonic = S.unsafeIndex m f <= i - either (const $ e-f) (U.sum . U.slice f (e-f) . S.fromSized) l
 
 {-# INLINEABLE matchStepOrderless #-}
 matchStepOrderless :: KnownNat n => Either Int (S.Vector n Int) -> MatchState n (Int , Int) -> Match Int -> Next (MatchState n (Int , Int))
@@ -145,7 +145,7 @@ withSensitivity CaseSensitive = id
 --  the optimal way for this kind of matching but in practice it seems fast enough.
 fuzzyMatcherSized :: KnownNat n => p n -> CaseSensitivity -> Text -> MatcherSized n MatchPart
 fuzzyMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = build . concatMap go $ [T.length t , T.length t - 1 .. 1]
-                             , sizes = if S.sum sz == S.length sz then Left (S.length sz) else Right sz }
+                                       , sizes = if S.sum sz == S.length sz then Left (S.length sz) else Right sz }
   where
     sz      = fromMaybe (S.replicate 1) . S.fromList . map (length . unpackUtf16 . withSensitivity c . T.singleton)  . T.unpack  $ t
     go !k   = zipWith (\t' l -> (unpackUtf16 . withSensitivity c $ t' , MatchPart l (l + k -1))) (kConsecutive k t) [0 ..]
@@ -170,10 +170,13 @@ orderlessMatcher c = makeMatcher c (length . T.words) orderlessMatcherSized
 fuzzyMatchSized :: KnownNat n => MatcherSized n MatchPart -> Text -> Maybe (MatchFull n)
 fuzzyMatchSized (MatcherSized c m l) = full . run c (MatchState (-1) (S.replicate 0) ()) (matchStepFuzzy l) m
   where
-    full (MatchState !e !u _) = if e + 1 == S.length u then Just $ MatchFull (matchScore l u) u else Nothing
+    full s@(MatchState !e !u _) = if e + 1 == S.length u then Just $ MatchFull (matchScore l u) u else Nothing
 
 fuzzyMatch :: Matcher MatchPart -> Text -> Maybe [Text]
 fuzzyMatch (Matcher m) t = parts (S.fromSized <$> sizes m) t . S.fromSized . indices <$> fuzzyMatchSized m t
+
+fuzzyMatchParts :: KnownNat n => MatcherSized n MatchPart -> Text -> S.Vector n Int -> [Text]
+fuzzyMatchParts m t = parts (S.fromSized <$> sizes m) t . S.fromSized
 
 {-# INLINEABLE orderlessMatchSized#-}
 orderlessMatchSized :: KnownNat n => MatcherSized n Int -> Text -> Maybe (MatchFull n)
@@ -184,6 +187,9 @@ orderlessMatchSized (MatcherSized c m l) = full . run c (MatchState 0 (S.replica
 
 orderlessMatch :: Matcher Int -> Text -> Maybe [Text]
 orderlessMatch (Matcher m) t = partsOrderless (S.fromSized <$> sizes m) t . S.fromSized . indices <$> orderlessMatchSized m t
+
+orderlessMatchParts :: KnownNat n => MatcherSized n Int -> Text -> S.Vector n Int -> [Text]
+orderlessMatchParts m t = partsOrderless (S.fromSized <$> sizes m) t . S.fromSized
 
 -- | The parts of a string resulting from a match using the fuzzy matcher.
 parts :: Either Int (U.Vector Int) -- ^ The information about the lengths of different needles.

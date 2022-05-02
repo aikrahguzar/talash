@@ -89,7 +89,7 @@ showMatchColor :: Handle -> [Text] -> IO ()
 showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeString) o Term8 . fst . foldl' go (Value "" , False) $ t) *> B.hPutStrLn o ""
   where
     go (c , False) n = (c <> Value n , True)
-    go (c , True ) n = (c <> Fg Blue (Value n) , False)
+    go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
 
 -- | Run an IO action that needs two handles to named pipes by creating two named pipes, opening the handles to them performing the action
 --   and then cleaning up by closing the handles and deleting the named pipes created. The names of the pipes are printed on the stdout and are of the

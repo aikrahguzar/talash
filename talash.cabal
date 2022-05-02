@@ -62,13 +62,14 @@ library
                     Talash.Piped
 
     -- Modules included in this library but not exported.
-    other-modules: Talash.Internal Talash.Brick.Internal
+    other-modules: Talash.Internal Talash.Brick.Internal Talash.ScoredMatch
     default-extensions: DeriveGeneric OverloadedStrings NoImplicitPrelude BangPatterns TupleSections ScopedTypeVariables DeriveFunctor DataKinds KindSignatures
     other-extensions: TemplateHaskell ExistentialQuantification RankNTypes GeneralizedNewtypeDeriving
     build-depends:base                    >=  4.10.1 && < 5,
-                  alfred-margaret         ^>= 1.1.1.0,
+                  alfred-margaret         ^>= 1.1,
                   brick                   >=  0.60 && < 0.70,
                   bytestring              >=  0.10.8 && < 0.12,
+                  bitvec,
                   colorful-monoids        >=  0.2.1 && < 0.3,
                   containers ,
                   ghc-compact             >=  0.1.0 && < 0.3,
@@ -81,6 +82,7 @@ library
                   unix                    >=  2.7.2 && < 2.8,
                   unordered-containers    >=  0.2.9 && < 0.3,
                   vector                  ^>= 0.12.1,
+                  vector-th-unbox,
                   vector-algorithms       ^>= 0.8.0.3,
                   vector-sized            >=  1.4.0 && < 1.5,
                   vty                     ^>= 5.33

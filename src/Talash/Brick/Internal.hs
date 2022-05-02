@@ -8,7 +8,7 @@ import Brick.Widgets.Border.Style as Export
 import Brick.Widgets.Center as Export (vCenter, center)
 import Brick.Widgets.Edit  as Export (editor , editorText, renderEditor, Editor, handleEditorEvent, getEditContents, applyEdit )
 import Brick.Widgets.List as Export (List, list ,handleListEvent, handleListEventVi, listAttr, listSelectedAttr, listSelectedElement , listSelectedL
-                                    ,listReplace , listElements, GenericList (listElements, listSelected))
+                                    ,listReplace , listElements, GenericList (listElements, listSelected) , listMoveUp , listMoveDown)
 import qualified Brick.Widgets.List as L
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
 import Graphics.Vty.Config (Config(inputFd))

@@ -41,7 +41,6 @@ import Talash.Core hiding (makeMatcher)
 import Talash.Files
 import Talash.Internal
 import Data.Monoid.Colorful as C
-import Brick.Widgets.List (listMoveDown, listMoveUp)
 
 data Searcher a = Searcher { -- | The editor to get the query from.
                              _query :: Editor Text Bool
