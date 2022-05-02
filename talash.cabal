@@ -75,6 +75,7 @@ library
                   ghc-compact             >=  0.1.0 && < 0.3,
                   directory               >=  1.3.6 && < 1.4,
                   intro                   >=  0.4.0 && < 0.10,
+                  io-streams,
                   microlens               >=  0.4.0 && < 0.5,
                   microlens-th            >=  0.4.0 && < 0.5,
                   primitive ,

@@ -8,7 +8,6 @@
 
 module Talash.Chunked where
 
-import Brick hiding (Down)
 import Brick.Widgets.List
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
@@ -24,35 +23,27 @@ import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeLits
 import Intro hiding (splitAt)
 import Lens.Micro
+import System.IO (stdout)
+import qualified System.IO.Streams as I
 import Talash.Core hiding (match , makeMatcher)
 import Talash.Files
 import Talash.Internal hiding (makeMatcher)
 import Talash.Piped (showMatchColor)
 import Talash.ScoredMatch
-import System.IO (stdout)
 
-newtype Chunks (n:: Nat) a = Chunks {chunks ::  V.Vector (SV.Vector n a)} deriving (Eq , Ord , Show , Functor , Foldable)
+newtype Chunks (n:: Nat) = Chunks {chunks ::  V.Vector (SV.Vector n Text)} deriving (Eq , Ord , Show)
 newtype MatchSetG a = MatchSetG {matchset :: Set a} deriving (Eq , Ord , Show , Semigroup , Monoid , Foldable)
 type MatchSetSized n = MatchSetG (ScoredMatchSized n)
 
 instance Splittable MatchSetG where
   splitAt n = bimap MatchSetG MatchSetG . DS.splitAt n . matchset
 
-data SearchStateSized (n :: Nat) a = SearchStateSized { _currentQuery :: Text
-                                                      , _currentMatcher :: Maybe (MatcherSized n a)
-                                                      , _prevQuery :: Text
-                                                      , _chunkNumber :: Int
-                                                      , _canSend :: Bool
-                                                      , _matchSet :: MatchSetSized n}
+data SearchStateSized (n :: Nat) a = SearchStateSized { _currentQuery :: {-# UNPACK #-} !Text
+                                                      , _prevQuery :: {-# UNPACK #-} !Text
+                                                      , _chunkNumber :: {-# UNPACK #-} !Int
+                                                      , _canSend ::  !Bool
+                                                      , _matchSet :: !(MatchSetSized n)}
 makeLenses ''SearchStateSized
-
-data SearchEvent n = SearchEvent { -- | The matches received.
-                                   _matches :: MatchSetG (ScoredMatchSized n)
-                                  -- | The (maximum possible) number of matches. See the note on `_numMatches`.
-                                 , _totalMatches :: Int
-                                  -- | The term which was searched for.
-                                 , _term :: Maybe Text}
-makeLenses ''SearchEvent
 
 data SearchFunctions a = SearchFunctions { _makeMatcher :: Text -> Maybe (Matcher a)
                                          , _match :: forall n. KnownNat n => MatcherSized n a -> Text -> Maybe (MatchFull n)
@@ -63,25 +54,30 @@ makeLenses ''SearchFunctions
 
 -- | The constant environment in which the search runs.
 data SearchEnv n a = SearchEnv { _searchFunctions :: SearchFunctions a  -- ^ The functions used to find and display matches.
-                               , _send :: forall n m. (KnownNat n , KnownNat m) => Bool -> Chunks n Text -> MatcherSized m a -> MatchSetSized m -> IO ()
+                               , _send :: forall n m. (KnownNat n , KnownNat m) => Bool -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
                                , _maxMatches :: Int
-                               , _candidates :: Chunks n Text -- ^ The vector of candidates.
+                               , _candidates :: Chunks n
                                , _query :: MVar (Maybe Text)
                                , _allMatches :: M.IOVector (S.Vector n Bit) }
 makeLenses ''SearchEnv
 
-(!) :: KnownNat n => Chunks n a -> ChunkIndex -> a
+{-# INLINABLE  (!) #-}
+(!) :: KnownNat n => Chunks n -> ChunkIndex -> Text
 (!) (Chunks v) (ChunkIndex i j) = V.unsafeIndex (SV.fromSized $ V.unsafeIndex v i) j
 
+{-# INLINABLE  union #-}
 union :: Int -> MatchSetSized n -> MatchSetSized n -> MatchSetSized n
 union n (MatchSetG s1) (MatchSetG s2) = MatchSetG (DS.take n $ DS.union s1 s2)
 
+{-# INLINE  isNull #-}
 isNull :: MatchSetSized n -> Bool
 isNull (MatchSetG s) = DS.null s
 
-getChunk :: Int -> Chunks n a -> SV.Vector n a
+{-# INLINE  getChunk #-}
+getChunk :: Int -> Chunks n -> SV.Vector n Text
 getChunk i (Chunks f) = V.unsafeIndex f i
 
+{-# INLINEABLE  matchChunk #-}
 matchChunk :: forall n m a. (KnownNat n , KnownNat m) => (MatcherSized n a -> Text -> Maybe (MatchFull n)) -> MatcherSized n a -> Int -> SV.Vector m Text
   -> S.Vector m Bit -> (S.Vector m Bit , MatchSetSized n)
 matchChunk fun m = go
@@ -93,11 +89,13 @@ matchChunk fun m = go
         mtch j (Bit True) = maybe (Bit False , zero) (conv j) . fun m . SV.unsafeIndex v $ j
         conv j (MatchFull k v) = (Bit True , ScoredMatchSized (Down k) (ChunkIndex ci j) v)
 
+{-# INLINABLE resetMatches #-}
 resetMatches :: forall n m a. KnownNat n => SearchEnv n a -> SearchStateSized m a -> IO ()
 resetMatches env state
   | T.isInfixOf (state ^. prevQuery) (state ^. currentQuery) = pure ()
   | otherwise                                                = M.set (env ^. allMatches) (S.replicate 1)
 
+{-# INLINABLE  searchNextChunk #-}
 searchNextChunk :: (KnownNat n , KnownNat m) => SearchEnv n a -> MatcherSized m a -> SearchStateSized m a -> IO (SearchStateSized m a)
 searchNextChunk env matcher state = nextstate . getMatches =<< M.read (env ^. allMatches) i
   where
@@ -112,7 +110,7 @@ searchNextChunk env matcher state = nextstate . getMatches =<< M.read (env ^. al
 matcherLoop :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> Text -> MatcherSized m a -> IO (Maybe Text)
 matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
   where
-    initstate = SearchStateSized qry (Just matcher) prev 0 False (MatchSetG DS.empty)
+    initstate = SearchStateSized qry prev 0 False (MatchSetG DS.empty)
     loop state = step =<< tryTakeMVar (env ^. query)
       where
         step x
@@ -124,8 +122,8 @@ matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
             doSend b = when (state ^. canSend || b) $ (env ^. send) b (env ^. candidates) matcher (state ^. matchSet)
             inrange = state ^. chunkNumber < (V.length . chunks $ env ^. candidates)
 
-searchEnv :: KnownNat n => SearchFunctions a -> Int -> (forall n m. (KnownNat n , KnownNat m) => Bool -> Chunks n Text -> MatcherSized m a -> MatchSetSized m -> IO ())
-  -> Chunks n Text -> IO (SearchEnv n a)
+searchEnv :: KnownNat n => SearchFunctions a -> Int -> (forall n m. (KnownNat n , KnownNat m) => Bool -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ())
+  -> Chunks n -> IO (SearchEnv n a)
 searchEnv funs n sender chks = SearchEnv funs sender n chks <$> newEmptyMVar <*> M.replicate (V.length . chunks $ chks) (S.replicate 1)
 
 searchLoop :: KnownNat n => SearchEnv n a -> IO ()
@@ -143,7 +141,7 @@ fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchPa
 orderlessFunctions :: CaseSensitivity -> SearchFunctions Int
 orderlessFunctions c = SearchFunctions (orderlessMatcher c) orderlessMatchSized orderlessMatchParts
 
-makeChunks :: forall n. KnownNat n => V.Vector Text -> Chunks n Text
+makeChunks :: forall n. KnownNat n => V.Vector Text -> Chunks n
 makeChunks v = Chunks $ V.generate numchunks chunk
   where
     n = fromIntegerUnsafe $ natVal (Proxy :: Proxy n)
@@ -152,12 +150,12 @@ makeChunks v = Chunks $ V.generate numchunks chunk
       | i + 1 < numchunks  = fromJust . SV.toSized . V.slice (i*n) n $ v
       | otherwise          = fromJust . SV.toSized $ V.slice (i*n) remainder v <> V.replicate (n - remainder) ""
 
-makeChunks5 :: V.Vector Text -> Chunks 5 Text
+makeChunks5 :: V.Vector Text -> Chunks 5
 makeChunks5 = makeChunks
 
 data SimpleSearcher = SimpleSearcher {terms :: [Text] , sleepTime :: Int , matchesToPrint :: Int}
 
-printMatches :: forall n m a. (KnownNat n , KnownNat m) => Int -> SearchFunctions a -> Bool -> Chunks n Text -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatches :: forall n m a. (KnownNat n , KnownNat m) => Int -> SearchFunctions a -> Bool -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
 printMatches n funcs b store m s = when b (putStrLn "\nMatches for this round.\n" *> go (fst . splitAt n $ s))
   where
     go = traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout $ (funcs ^. display) m (store ! c) v)
@@ -175,3 +173,10 @@ runSimpleSearcher p s v = runSimpleSearcherWithEnv s =<< simpleFuzzyEnv (matches
 
 testVector :: IO (V.Vector Text)
 testVector = readVectorStdIn
+
+simpleSearcherTest :: IO ()
+simpleSearcherTest = runSimpleSearcher (Proxy :: Proxy 32)
+                                       (SimpleSearcher ["" , "m" , "ma" , "mal" , "malda" , "maldac" , "maldace" , "maldacen" , "maldacena"
+                                                       , "w" , "wi" , "wit" , "witt" , "witte" , "witten" , "f" , "fr" , "fra" , "fran" , "franc" , "franco"
+                                                       , "c" , "cl" , "clo" , "clos" , "closs" , "closse" , "closset" , "s" , "se" , "sen"] 25000 16) =<< testVector
+--simpleSearcherTest = runSimpleSearcher (Proxy :: Proxy 32) (SimpleSearcher ["suse", "linux" , "binary" , "close" , "Witten" , "Maldacena" , "Franco" , "Closset"] 100000 1024) =<< testVector
