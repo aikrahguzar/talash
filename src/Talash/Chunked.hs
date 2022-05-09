@@ -18,6 +18,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Set as DS
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import Data.Vector.Algorithms.Intro (sort)
 import qualified Data.Vector.Mutable as MV
 import qualified Data.Vector.Sized as SV
 import qualified Data.Vector.Unboxed as U
@@ -26,7 +27,6 @@ import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeLits
 import Lens.Micro
-import System.IO (stdout, openFile, IOMode (ReadMode))
 import System.IO.Streams (toVector)
 import qualified System.IO.Streams as I
 import Talash.Core hiding (match , makeMatcher)
@@ -35,7 +35,6 @@ import Talash.Internal hiding (makeMatcher , readVectorHandleWith)
 import Talash.Intro hiding (splitAt)
 import Talash.Piped (showMatchColor)
 import Talash.ScoredMatch
-import Data.Vector.Algorithms.Intro (sort)
 
 newtype Chunks (n:: Nat) = Chunks { chunks ::  V.Vector (SV.Vector n Text)} deriving (Eq , Ord , Show)
 newtype MatchSetG a = MatchSetG {matchset :: DS.Set a} deriving (Eq , Ord , Show , Semigroup , Monoid , Foldable)
@@ -203,9 +202,8 @@ concatChunks :: KnownNat n => Int -> Chunks n -> V.Vector Text
 concatChunks i (Chunks c) =  V.concatMap SV.fromSized . V.take i $ c
 
 forceChunks :: KnownNat n => Chunks n -> Chunks n
-forceChunks (Chunks v) = Chunks . V.force $ v
+forceChunks (Chunks v) = Chunks . V.force . V.map SV.force $ v
 
-{-# INLINABLE  chunksFromStream #-}
 chunksFromStream :: forall n. KnownNat n => I.InputStream Text -> IO (Chunks n)
 chunksFromStream i = Chunks <$> (I.toVector =<< I.mapMaybe (\v -> SV.toSized $ v V.++ V.replicate (n - length v) "") =<< I.chunkVector n i)
   where
