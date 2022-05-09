@@ -55,10 +55,12 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:
                     Talash.Brick
+                    Talash.Brick.Chunked
                     Talash.Brick.Columns
                     Talash.Chunked
                     Talash.Core
                     Talash.Files
+                    Talash.Intro
                     Talash.Piped
 
     -- Modules included in this library but not exported.
@@ -66,20 +68,22 @@ library
     default-extensions: DeriveGeneric OverloadedStrings NoImplicitPrelude BangPatterns TupleSections ScopedTypeVariables DeriveFunctor DataKinds KindSignatures
     other-extensions: TemplateHaskell ExistentialQuantification RankNTypes GeneralizedNewtypeDeriving
     build-depends:base                    >=  4.10.1 && < 5,
-                  alfred-margaret         ^>= 1.1,
+                  alfred-margaret         ^>= 2.0,
                   brick                   >=  0.60 && < 0.70,
                   bytestring              >=  0.10.8 && < 0.12,
                   bitvec,
                   colorful-monoids        >=  0.2.1 && < 0.3,
                   containers ,
+                  extra ,
+                  mtl ,
+                  safe ,
                   ghc-compact             >=  0.1.0 && < 0.3,
                   directory               >=  1.3.6 && < 1.4,
-                  intro                   >=  0.4.0 && < 0.10,
                   io-streams,
                   microlens               >=  0.4.0 && < 0.5,
                   microlens-th            >=  0.4.0 && < 0.5,
                   primitive ,
-                  text                    >=  1.2.3 && < 1.3,
+                  text                    ^>= 2.0,
                   unix                    >=  2.7.2 && < 2.8,
                   unordered-containers    >=  0.2.9 && < 0.3,
                   vector                  ^>= 0.12.1,
@@ -99,7 +103,6 @@ executable talash
     -- other-modules:
     build-depends:
         base                    >= 4.10.1 && < 5,
-        intro                   >= 0.4.0  && < 0.10,
         talash
 
     ghc-options: -threaded -rtsopts

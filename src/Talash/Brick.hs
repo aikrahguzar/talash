@@ -34,7 +34,7 @@ import Data.Vector (Vector , force , take , unsafeIndex , elemIndex)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.Compact (Compact , compact , getCompact)
-import Intro hiding (sort, on , take)
+import Talash.Intro hiding (sort, on , take)
 import System.Environment (getArgs)
 import Talash.Brick.Internal
 import Talash.Core hiding (makeMatcher)
@@ -102,7 +102,7 @@ defHooks = EventHooks (const . const continue) (const continue) (const . const c
                                 (const . const . const continue) continue continue
 -- | Get the current query from the editor of the searcher.
 makeQuery :: Searcher a -> Maybe Text
-makeQuery s = headMay . getEditContents $ s ^. query
+makeQuery s = listToMaybe . getEditContents $ s ^. query
 
 -- | Quit without any selection.
 haltQuit :: Searcher a -> EventM n (Next (Searcher a))
@@ -128,7 +128,7 @@ handleSearch v s e = continue . (numMatches .~ e ^. totalMatches) . (matches %~ 
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: Text -> Text -> Searcher a -> Widget Bool
-searcherWidget p n s = joinBorders . border $    searchWidgetAux True p (s ^. query) (withAttr "Stats" . txt $ show (s ^. numMatches) <>  "/" <> n)
+searcherWidget p n s = joinBorders . border $    searchWidgetAux True p (s ^. query) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches) <>  "/" <> n)
                                              <=> hBorder  <=> joinBorders (listWithHighlights "➜ " id False (s ^. matches))
 
 -- | Handle the editing of the query by starting the computation of the matches in a new thread and storing the `ThreadId` in `_wait`.
@@ -139,7 +139,7 @@ editStep e@(SearchEnv f v b _) s
   | makeQuery s == (s ^. prevQuery)      = pure s
   | otherwise                            = (\w -> set wait (Just w) s') <$> replaceSearch isBigger e s'
   where
-    isBigger = fromMaybe False $ T.isInfixOf <$> (s ^. prevQuery) <*> (headMay . getEditContents $ s ^. query)
+    isBigger = fromMaybe False $ T.isInfixOf <$> (s ^. prevQuery) <*> (listToMaybe . getEditContents $ s ^. query)
     s'       = set prevQuery (makeQuery s) s
 
 -- | The functions for generating a search event.  It is executed in a separate thread via `forkIO` in `replaceSearch`.
@@ -170,7 +170,7 @@ defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKey
 searchApp :: AppSettings b -> SearchEnv -> App (Searcher b) SearchEvent Bool
 searchApp (AppSettings th hks) env@(SearchEnv _ v _ _) = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = pure , appAttrMap = am}
   where
-    ad                                    = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. prompt) (show . length $ v)
+    ad                                    = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. prompt) (T.pack . show . length $ v)
     am                                    = const $ attrMap defAttr (th ^. themeAttrs)
     hk                                    = runReaderT hks env
     he s (VtyEvent (EvKey k m))           = keyHook hk k m s

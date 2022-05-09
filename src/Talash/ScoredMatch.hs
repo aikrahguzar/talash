@@ -9,7 +9,7 @@
 
 module Talash.ScoredMatch where
 
-import Intro
+import Talash.Intro
 import Data.Vector.Unboxed.Deriving
 import GHC.TypeNats
 import qualified Data.Vector.Unboxed.Sized as S

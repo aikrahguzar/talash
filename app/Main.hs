@@ -1,9 +1,9 @@
 module Main where
 
-import qualified Talash.Brick as B
+import qualified Talash.Brick.Chunked as B
 import qualified Talash.Piped as P
 import qualified Talash.Chunked as C
-import Intro
+import Talash.Intro
 import System.Environment (getArgs)
 
 run :: [String] -> IO ()

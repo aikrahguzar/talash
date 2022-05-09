@@ -20,17 +20,18 @@ module Talash.Core ( -- * Types
 import Control.Monad.ST (ST, runST)
 import qualified Data.Text as T
 import Data.Text.AhoCorasick.Automaton
-import Data.Text.Utf16
+import Data.Text.Utf8 hiding (indices)
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as M
 import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
+import Talash.Intro
 import GHC.TypeNats
 import Prelude (fromIntegral)
-import Intro
 import Lens.Micro (_1 , _2 , (^.))
+import Debug.Trace (traceShow)
 
 -- | The MatcherSized type consists of a state machine for matching a fixed number of needles. The number of matches needed is encoded in the Nat parameterzing
 --   the type. Here the purpose is to improve the memory consumption by utlizing the `Unbox` instance for sized tagged unboxed vectors from
@@ -101,11 +102,11 @@ matchScore u v
 {-# INLINEABLE matchStepFuzzy #-}
 matchStepFuzzy :: KnownNat n => Either Int (S.Vector n Int) -> MatchState n () -> Match MatchPart -> Next (MatchState n ())
 matchStepFuzzy l s@(MatchState !f !m _) (Match (CodeUnitIndex !i) (MatchPart !b !e))
-  | e - b == either id S.length l - 1              = Done $ updateMatch i l s b e ()
-  | (f + 1 == b || f >= b && e > f) && monotonic   = Step $ updateMatch i l s b e ()
-  | otherwise                                      = Step   s
+  | e - b == either id S.length l - 1                                                                           = Done $ updateMatch i l s b e ()
+  | (b == 0 && f == (-1)) || (f + 1 == b && S.unsafeIndex m f + e <= i + b) || (f >= b && e > f && monotonic)   = Step $ updateMatch i l s b e ()
+  | otherwise                                                                                                   = Step   s
   where
-    monotonic = S.unsafeIndex m f <= i - either (const $ e-f) (U.sum . U.slice f (e-f) . S.fromSized) l
+    monotonic = S.unsafeIndex m f + either (const $ e-f) (U.sum . U.slice f (e-f) . S.fromSized) l <= i
 
 {-# INLINEABLE matchStepOrderless #-}
 matchStepOrderless :: KnownNat n => Either Int (S.Vector n Int) -> MatchState n (Int , Int) -> Match Int -> Next (MatchState n (Int , Int))
@@ -119,11 +120,6 @@ matchStepOrderless !lv s@(MatchState r !m (!lm , !li)) (Match (CodeUnitIndex !c)
 kConsecutive :: Int ->  Text -> [Text]
 kConsecutive k t = map (T.take k) . take (1 + T.length t - k) . T.tails $ t
 
-{-# INLINE run #-}
-run :: CaseSensitivity -> a -> (a -> Match v -> Next a) -> AcMachine v -> Text -> a
-run IgnoreCase     = runLower
-run CaseSensitive  = runText
-
 -- | A general function to construct a Matcher. Returns Nothing if the string is empty or if the number of needles turns out to be non-positive
 makeMatcher :: forall a. CaseSensitivity -> (Text -> Int) -- ^ The function to determine the number of needles from the query string.
                                                           -- The proxy argument is instantiated at the resulting value.
@@ -136,7 +132,7 @@ makeMatcher c lenf matf t
 
 {-# INLINE withSensitivity #-}
 withSensitivity :: CaseSensitivity -> Text -> Text
-withSensitivity IgnoreCase    = lowerUtf16
+withSensitivity IgnoreCase    = lowerUtf8
 withSensitivity CaseSensitive = id
 
 -- | Constructs the matcher for fuzzy matching. The needles are all possible contigous subtrings of the string being matched. The Nat @n@ must be instantiated at the
@@ -147,8 +143,8 @@ fuzzyMatcherSized :: KnownNat n => p n -> CaseSensitivity -> Text -> MatcherSize
 fuzzyMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = build . concatMap go $ [T.length t , T.length t - 1 .. 1]
                                        , sizes = if S.sum sz == S.length sz then Left (S.length sz) else Right sz }
   where
-    sz      = fromMaybe (S.replicate 1) . S.fromList . map (length . unpackUtf16 . withSensitivity c . T.singleton)  . T.unpack  $ t
-    go !k   = zipWith (\t' l -> (unpackUtf16 . withSensitivity c $ t' , MatchPart l (l + k -1))) (kConsecutive k t) [0 ..]
+    sz      = fromMaybe (S.replicate 1) . S.fromList . map (length . unpackUtf8 . withSensitivity c . T.singleton)  . T.unpack  $ t
+    go !k   = zipWith (\t' l -> (withSensitivity c t' , MatchPart l (l + k -1))) (kConsecutive k t) [0 ..]
 
 -- | Unsized version of fuzzyMatcherSized
 fuzzyMatcher :: CaseSensitivity -> Text -> Maybe (Matcher MatchPart)
@@ -157,8 +153,8 @@ fuzzyMatcher c  = makeMatcher c T.length fuzzyMatcherSized
 -- | Constructs the matcher for orderless matching, the needles are the words from the query string and the proxy argument should be instantiated at the
 --  number of words.
 orderlessMatcherSized :: KnownNat n => p n -> CaseSensitivity -> Text -> MatcherSized n Int
-orderlessMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = build . zip (unpackUtf16 <$> wrds) $ [0 ..]
-                               , sizes = Right . fromMaybe (S.replicate 1) . S.fromList . map (codeUnitIndex . lengthUtf16) $ wrds }
+orderlessMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = build . zip wrds $ [0 ..]
+                               , sizes = Right . fromMaybe (S.replicate 1) . S.fromList . map (codeUnitIndex . lengthUtf8) $ wrds }
   where
     wrds = withSensitivity c <$> T.words t
 
@@ -168,7 +164,7 @@ orderlessMatcher c = makeMatcher c (length . T.words) orderlessMatcherSized
 
 {-# INLINEABLE fuzzyMatchSized#-}
 fuzzyMatchSized :: KnownNat n => MatcherSized n MatchPart -> Text -> Maybe (MatchFull n)
-fuzzyMatchSized (MatcherSized c m l) = full . run c (MatchState (-1) (S.replicate 0) ()) (matchStepFuzzy l) m
+fuzzyMatchSized (MatcherSized c m l) = full . runWithCase c (MatchState (-1) (S.replicate 0) ()) (matchStepFuzzy l) m
   where
     full s@(MatchState !e !u _) = if e + 1 == S.length u then Just $ MatchFull (matchScore l u) u else Nothing
 
@@ -180,7 +176,7 @@ fuzzyMatchParts m t = parts (S.fromSized <$> sizes m) t . S.fromSized
 
 {-# INLINEABLE orderlessMatchSized#-}
 orderlessMatchSized :: KnownNat n => MatcherSized n Int -> Text -> Maybe (MatchFull n)
-orderlessMatchSized (MatcherSized c m l) = full . run c (MatchState 0 (S.replicate 0) (0,0)) (matchStepOrderless l) m
+orderlessMatchSized (MatcherSized c m l) = full . runWithCase c (MatchState 0 (S.replicate 0) (0,0)) (matchStepOrderless l) m
   where
     ln = either id S.length l
     full u = if endLocation u == ln then Just $ MatchFull 0 (partialMatch u) else Nothing
@@ -196,10 +192,10 @@ parts :: Either Int (U.Vector Int) -- ^ The information about the lengths of dif
   -> Text -- ^ The candidate string that has been matched
   -> U.Vector Int -- ^ The vector recording the positions of the needle in the matched string.
   -> [Text] -- ^ The candidate string split up according to  the match
-parts v t = done . foldl' cut ([] , lengthUtf16 t) . minify v
+parts v t = done . foldl' cut ([] , lengthUtf8 t) . minify v
   where
-    done (ms , cp) = unsafeSliceUtf16 0 cp t : ms
-    cut  (!ms , !cp) !cc  = (unsafeSliceUtf16 cc (cp - cc) t : ms , cc )
+    done (ms , cp) = unsafeSliceUtf8 0 cp t : ms
+    cut  (!ms , !cp) !cc  = (unsafeSliceUtf8 cc (cp - cc) t : ms , cc )
 
 -- | The parts of a string resulting from a match using the orderless matcher. See parts for an explanation of arguments.
 partsOrderless :: Either Int (U.Vector Int) -> Text -> U.Vector Int -> [Text]

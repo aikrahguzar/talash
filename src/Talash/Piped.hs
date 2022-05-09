@@ -23,7 +23,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Compact
-import Intro
+import Talash.Intro
 import System.Directory
 import System.Environment (getArgs)
 import System.Exit
@@ -64,10 +64,10 @@ event :: SearchFunction -> (Handle -> [Text] -> IO ()) -- ^ The functions that d
           -> V.Vector Text -- ^ The candidates
           -> SearchResult -- ^ The last search result
           -> IO (Maybe SearchResult) -- ^ The final result. The Nothing is for the case if the input was empty signalling that the searcher should exit.
-event f g (IOPipes i o) v s = (\t -> if T.null t then pure Nothing else go t) . T.strip . decodeStringLenient =<< B.hGetLine i
+event f g (IOPipes i o) v s = (\t -> if T.null t then pure Nothing else go t) . T.strip . decodeUtf8Lenient =<< B.hGetLine i
   where
     go t     = (\s' -> pream s' *> V.mapM_ (g o) (s' ^. matches) *> hFlush o $> Just s') . response f v t $ s
-    pream s' = B.hPutStrLn o (encodeString . fromMaybe "" $ s' ^. query) *> B.hPutStrLn o (show . V.length $ s' ^. matches)
+    pream s' = B.hPutStrLn o (encodeUtf8 . fromMaybe "" $ s' ^. query) *> B.hPutStrLn o (B.pack . show . V.length $ s' ^. matches)
 
 -- | Starts with the dummy `initialSearchResult` and handles `event` in a loop until the searcher receives an empty input and exits.
 searchLoop :: SearchFunction -> (Handle -> [Text] -> IO ())  -> V.Vector Text -> IO ()
@@ -82,11 +82,11 @@ initialSearchResult v = SearchResult Nothing (U.enumFromN 0 (V.length v)) V.empt
 -- | Outputs the parts of a matching candidate to handle as space separated double quoted strings alternating between a match and a gap. The first text is
 -- always a gap and can be empty the rest should be non-empty
 showMatch :: Handle -> [Text] -> IO ()
-showMatch o = B.hPutStrLn o . foldl' (\b n -> b <> " \"" <> encodeString n <> "\" ") ""
+showMatch o = B.hPutStrLn o . foldl' (\b n -> b <> " \"" <> encodeUtf8 n <> "\" ") ""
 
 -- | Outputs a matching candidate for the terminal with the matches highlighted in blue. Uses the `Colored` `Text` monoid from `colorful-monoids` for coloring.
 showMatchColor :: Handle -> [Text] -> IO ()
-showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeString) o Term8 . fst . foldl' go (Value "" , False) $ t) *> B.hPutStrLn o ""
+showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . fst . foldl' go (Value "" , False) $ t) *> B.hPutStrLn o ""
   where
     go (c , False) n = (c <> Value n , True)
     go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
@@ -127,7 +127,7 @@ runSearchStdInColor f = runSearchStdIn f showMatchColor
 -- Send a query to the searcher by writing the text in the second argument to the named-pipe with path given by the first argument.
 -- Does not check if the file is a named pipe.
 send :: String -> Text -> IO ()
-send i q = ifM (fileExist i) (withFile i WriteMode (`B.hPutStrLn` encodeString q)) (putStrLn . convertString $ "the named pipe" <> i <> " does not exist")
+send i q = ifM (fileExist i) (withFile i WriteMode (`B.hPutStrLn` encodeUtf8 q)) (putStrLn $ "the named pipe" <> T.pack i <> " does not exist")
 
 -- Read the results from the searcher from the named pipe with the path given as the argument. Does not check if the file exists or is a named pipe.
 recieve :: String -> IO ()
@@ -147,9 +147,9 @@ run' :: [String] -> IO ()
 run' ["load"]               = runSearchStdInColor (searchFunctionOL IgnoreCase)
 run' ["load" , "fuzzy"]     = runSearchStdInColor (searchFunctionFuzzy IgnoreCase)
 run' ["load" , "orderless"] = runSearchStdInColor (searchFunctionOL IgnoreCase)
-run' ["find" , x]           = askSearcher "/tmp/talash-input-pipe"  "/tmp/talash-output-pipe" . convertString $ x
-run' ["find" , n , x]       = askSearcher ("/tmp/talash-input-pipe" <> n)  ("/tmp/talash-output-pipe" <> n) . convertString $ x
-run' ["find" , i , o , x]   = askSearcher i o . convertString $ x
+run' ["find" , x]           = askSearcher "/tmp/talash-input-pipe"  "/tmp/talash-output-pipe" . T.pack $ x
+run' ["find" , n , x]       = askSearcher ("/tmp/talash-input-pipe" <> n)  ("/tmp/talash-output-pipe" <> n) . T.pack $ x
+run' ["find" , i , o , x]   = askSearcher i o . T.pack $ x
 run' ["exit"]               = askSearcher "/tmp/talash-input-pipe"  "/tmp/talash-output-pipe" ""
 run' ["exit" , n]           = askSearcher ("/tmp/talash-input-pipe" <> n)  ("/tmp/talash-output-pipe" <> n) ""
 run' ["exit" , i , o]       = askSearcher i o ""

@@ -43,7 +43,7 @@ import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.Compact (Compact , compact , getCompact)
 import GHC.TypeNats
-import Intro hiding (on ,replicate , take)
+import Talash.Intro hiding (on ,replicate , take)
 import System.Environment (getArgs)
 import System.IO ( Handle , hIsEOF , isEOF, hClose, stdin)
 import Talash.Brick.Internal
@@ -129,7 +129,7 @@ emptyIndices n = U.generate n ( , S.empty)
 
 -- | Get the current query from the editor of the searcher.
 makeQuery :: Searcher a -> Maybe Text
-makeQuery s = headMay . getEditContents $ s ^. query
+makeQuery s = listToMaybe . getEditContents $ s ^. query
 
 -- | Handling of keypresses. The default bindings are
 --  @Enter@ exits the app with the current selection.
@@ -149,7 +149,7 @@ handleSearch v s e = continue . (numMatches .~ e ^. totalMatches) . (matches %~ 
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: [AttrName] -> [Int] -> Text -> Text -> Searcher a -> Widget Bool
-searcherWidget as ls p n s = joinBorders . border $    searchWidgetAux True p (s ^. query) (withAttr "Stats" . txt $ show (s ^. numMatches) <>  "/" <> n)
+searcherWidget as ls p n s = joinBorders . border $    searchWidgetAux True p (s ^. query) (withAttr "Stats" . txt $ (T.pack . show $ s ^. numMatches) <>  "/" <> n)
                                              <=> hBorder  <=> joinBorders (columnsListWithHighlights "➜ " id as ls False (s ^. matches))
 
 -- | Quit without any selection.
@@ -164,7 +164,7 @@ editStep env s
   | makeQuery s == (s ^. prevQuery)      = pure s
   | otherwise                            = (\w -> set wait (Just w) s') <$> replaceSearch isBigger env s'
   where
-    isBigger = fromMaybe False $ T.isInfixOf <$> (s ^. prevQuery) <*> (headMay . getEditContents $ s ^. query)
+    isBigger = fromMaybe False $ T.isInfixOf <$> (s ^. prevQuery) <*> (listToMaybe . getEditContents $ s ^. query)
     s'       = set prevQuery (makeQuery s) s
 
 -- | The functions for generating a search event.  It is executed in a separate thread via `forkIO` in `replaceSearch`.
@@ -205,7 +205,7 @@ defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKey
 searchApp :: AppSettings b -> SearchEnv -> App (Searcher b) SearchEvent Bool
 searchApp (AppSettings th hks) env@(SearchEnv fs v b _) = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = pure , appAttrMap = am}
   where
-    ad                = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. columnAttrs) (th ^. columnLimits) (th ^. prompt) (show . length $ v)
+    ad                = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. columnAttrs) (th ^. columnLimits) (th ^. prompt) (T.pack . show . length $ v)
     am                                    = const $ attrMap defAttr (th ^. themeAttrs)
     hk                                    = runReaderT hks env
     he s (VtyEvent (EvKey k m))           = keyHook hk k m s

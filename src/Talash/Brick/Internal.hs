@@ -13,7 +13,7 @@ import qualified Brick.Widgets.List as L
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
 import Graphics.Vty.Config (Config(inputFd))
 import Graphics.Vty.Input.Events as Export 
-import Intro
+import Talash.Intro
 import Lens.Micro as Export (ASetter' , over, set, (^.) , _1 , _2 , _3 , (.~) , (?~) , (%~))
 import Lens.Micro.TH as Export ( makeLenses )
 import System.Posix.IO

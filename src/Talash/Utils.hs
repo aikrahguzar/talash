@@ -18,7 +18,7 @@ import Data.Vector.Algorithms.Intro (sort)
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeNats
-import Intro hiding (sort, take , modify)
+import Talash.Intro hiding (sort, take , modify)
 import Lens.Micro as Export (ASetter' , over, set, (^.) , _1 , _2 , _3 , (.~) , (?~) , (%~))
 import Lens.Micro.TH as Export ( makeLenses )
 import Talash.Core hiding (makeMatcher)
