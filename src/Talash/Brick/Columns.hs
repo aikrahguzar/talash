@@ -54,9 +54,9 @@ makeLenses ''AppTheme
 data ColumnsIso a = ColumnsIso { _toColumns :: a -> [Text] , _fromColumns :: [Text] -> a}
 makeLenses ''ColumnsIso
 
-type Searcher = SearcherG [[Text]]
-type SearchEvent = SearchEventG [[Text]]
-type AppSettings n a = AppSettingsG n a [[Text]] AppTheme
+type Searcher = SearcherG Vector [[Text]]
+type SearchEvent = SearchEventG Vector [[Text]]
+type AppSettings n a = AppSettingsG n Vector a [[Text]] AppTheme
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: [AttrName] -> [Int] -> Text -> Searcher -> Widget Bool

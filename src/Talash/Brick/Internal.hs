@@ -1,4 +1,9 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ExistentialQuantification #-}
 
 module Talash.Brick.Internal (twoColumnText , columns , searchWidget , searchWidgetAux , headingAndBody , listWithHighlights , columnsListWithHighlights
                              , SearcherG (..) , SearchEventG (..) , SearchEnv (..) ,  EventHooks (..) , AppSettingsG (..)
@@ -16,6 +21,8 @@ import Brick.Widgets.List as Export (List, list ,handleListEvent, handleListEven
                                     ,listReplace , listElements, GenericList (listElements, listSelected) , listMoveUp , listMoveDown)
 import qualified Brick.Widgets.List as L
 import Data.Vector (Vector , force , take , unsafeIndex , elemIndex)
+import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeLits
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
 import Graphics.Vty.Config (Config(inputFd))
@@ -26,23 +33,25 @@ import System.Posix.IO
 import System.Posix.Terminal
 import Talash.Chunked
 import Talash.Intro
+import Data.MonoTraversable as M
+import Talash.ScoredMatch (ScoredMatchSized)
 
-data SearchEventG a = SearchEvent  { -- | The matches received.
-                                   _matchedTop :: Vector a
+data SearchEventG v a = SearchEvent  { -- | The matches received.
+                                       _matchedTop :: v a
                                     -- | The (maximum possible) number of matches. See the note on `_numMatches`.
-                                   , _totMatches :: Int
+                                     , _totMatches :: Int
                                     -- | The term which was searched for.
-                                   , _term :: Text}
+                                     , _term :: Text}
 makeLenses ''SearchEventG
 
-data SearcherG a = Searcher { -- | The editor to get the query from.
+data SearcherG v a = Searcher { -- | The editor to get the query from.
                              _queryEditor :: Editor Text Bool
                               -- | The matches received split up as alternating sequences of match substrings and the gap between them. The first substring is always a gap
                               --   and can be empty, the rest should be no empty.
-                            , _matches :: List Bool a
+                            , _matches :: GenericList Bool v a
                               -- | The (maximum possible) number of matches. This is the length of vector stored in `_allMatches` which also contains the indices of
                               --   which weren't matched in case enough matches were found before going through all the candidates.
-                            , _eventSource :: BChan (SearchEventG a) -- ^ The BChan from which the app receives search events.
+                            , _eventSource :: BChan (SearchEventG v a) -- ^ The BChan from which the app receives search events.
                             , _numMatches :: Int
                             }
 makeLenses ''SearcherG
@@ -56,21 +65,28 @@ data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Boo
                                , focusLostHook :: a -> EventM Bool (Next a)
                                , focusGainedHook :: a -> EventM Bool (Next a)}
 
-data AppSettingsG (n :: Nat) a b t = AppSettings { _theme :: t
-                                                 , _hooks :: ReaderT (SearchEnv n a) EventHooks (SearcherG b) -- ^ The event hooks which can make use of the search environment.
-                                                 , _chunkSize :: Proxy n
-                                                 , _maximumMatches :: Int
-                                                 , _eventStrategy :: SearchReport -> Bool}
+data AppSettingsG (n :: Nat) v a b t = AppSettings { _theme :: t
+                                                   , _hooks :: ReaderT (SearchEnv n a) EventHooks (SearcherG v b) -- ^ The event hooks which can make use of the search environment.
+                                                   , _chunkSize :: Proxy n
+                                                   , _maximumMatches :: Int
+                                                   , _eventStrategy :: SearchReport -> Bool}
 makeLenses ''AppSettingsG
+
+newtype MatchVector (n::Nat) = MatchVector (U.Vector (ScoredMatchSized n)) deriving (Eq, Ord, Show, MonoFunctor, MonoFoldable)
+type instance Element (MatchVector n) = ScoredMatchSized n
+
+newtype WrappedMatchVector (n :: Nat) a = WrappedMatchVector (WrappedMono (MatchVector n) a) deriving (MonoFunctor, MonoFoldable)
+type instance Element (WrappedMatchVector (n :: Nat) a) = ScoredMatchSized n
+data MatchList a = forall n. MatchList (GenericList Bool (WrappedMatchVector n) a)
 
 defHooks :: EventHooks a
 defHooks = EventHooks (const . const continue) (const continue) (const . const continue) (const . const . const . const continue)
                                 (const . const . const continue) continue continue
 -- | Quit without any selection.
-haltQuit :: SearcherG a -> EventM n (Next (SearcherG a))
+haltQuit :: SearcherG v a -> EventM n (Next (SearcherG v a))
 haltQuit = halt . ((matches . listSelectedL) .~ Nothing)
 
-getQuery :: SearcherG a -> Text
+getQuery :: SearcherG v a -> Text
 getQuery s = fromMaybe "" . listToMaybe . getEditContents $ s ^. queryEditor
 
 
@@ -141,7 +157,7 @@ renderList drawElem = renderListWithIndex $ const drawElem
 --  @Up@ , @Down@ , @PageUp@ and @PageDown@ move through the matches.
 -- All others keys are used for editing the query. See `handleEditorEvent` for details.
 {-# INLINE handleKeyEvent #-}
-handleKeyEvent :: KnownNat n => (Text -> b) -> SearchEnv n a -> Key -> [Modifier] -> SearcherG b -> EventM Bool (Next (SearcherG b))
+handleKeyEvent :: (KnownNat n) => (Text -> b) -> SearchEnv n a -> Key -> [Modifier] -> SearcherG Vector b -> EventM Bool (Next (SearcherG Vector b))
 handleKeyEvent f env = go
   where
     go k m s
@@ -158,12 +174,12 @@ handleKeyEvent f env = go
           where
             nq = getQuery ns
 
-resetSearcher :: forall n a b. KnownNat n => (Text -> b) -> SearchEnv n a -> SearcherG b -> SearcherG b
+resetSearcher :: forall n a b. (KnownNat n) => (Text -> b) -> SearchEnv n a -> SearcherG Vector b -> SearcherG Vector b
 resetSearcher f env = (numMatches .~ 0) . (matches .~ list False (f <$> concatChunks k (env ^. candidates)) 0)
   where
     n = natVal (Proxy :: Proxy n)
     k = 1 + (env ^. maxMatches) `div` fromInteger n
 
 {-# INLINE  handleSearch #-}
-handleSearch :: SearcherG a -> SearchEventG a -> EventM Bool (Next (SearcherG a))
+handleSearch :: (Foldable v , L.Splittable v) => SearcherG v a -> SearchEventG v a -> EventM Bool (Next (SearcherG v a))
 handleSearch s e = continue . (numMatches .~ e ^. totMatches) . (matches %~ listReplace (e ^. matchedTop) (Just 0)) $ s

@@ -7,7 +7,7 @@
 {-# LANGUAGE  MultiParamTypeClasses #-}
 
 
-module Talash.ScoredMatch where
+module Talash.ScoredMatch (ChunkIndex (..) , ScoredMatchSized (..) , emptyMatch) where
 
 import Talash.Intro
 import Data.Vector.Unboxed.Deriving
@@ -34,3 +34,6 @@ instance Eq (ScoredMatchSized n) where
 
 instance Ord (ScoredMatchSized n) where
   compare (ScoredMatchSized s i _) (ScoredMatchSized t j _) = compare (s,i) (t,j)
+
+emptyMatch :: Int -> Int -> ScoredMatchSized 0
+emptyMatch i j = ScoredMatchSized 0 (ChunkIndex i j) S.empty

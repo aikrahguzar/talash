@@ -2,14 +2,14 @@ module Main where
 
 import qualified Talash.Brick as B
 -- import qualified Talash.Piped as P
-import qualified Talash.Chunked as C
+import qualified Talash.SimpleSearcher as S
 import Talash.Intro
 import System.Environment (getArgs)
 
 run :: [String] -> IO ()
 -- run ("piped":xs) = P.run' xs
 run ("tui"  :xs) = B.run' xs
-run ["test"]     = C.simpleSearcherTest
+run ["test"]     = S.simpleSearcherTest
 run  _           = putStrLn usageString
 
 usageString :: Text

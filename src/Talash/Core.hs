@@ -9,7 +9,7 @@
 module Talash.Core ( -- * Types
                      MatcherSized (..) , Matcher (..) , MatchState (..) , MatchPart (..) , MatchFull (..) , SearchSettings (..) , Indices
                      -- * Matchers and matching
-                     , makeMatcher
+                     , makeMatcher , emptyMatcher
                      -- ** Fuzzy style
                      , fuzzyMatcherSized , fuzzyMatcher , fuzzyMatchSized , fuzzyMatch , fuzzyMatchParts
                      -- ** Orderless Style
@@ -125,10 +125,9 @@ makeMatcher :: forall a. CaseSensitivity -> (Text -> Int) -- ^ The function to d
                                                           -- The proxy argument is instantiated at the resulting value.
                     -> (forall n. KnownNat n => Proxy n -> CaseSensitivity -> Text -> MatcherSized n a) -- ^ The functions for constructing the matcher
                     -> Text -- ^ The query string
-                    -> Maybe (Matcher a) -- ^ Nothing if the string is empty or if the number of needles turns out to be non-positive
+                    -> Matcher a -- ^ Nothing if the string is empty or if the number of needles turns out to be non-positive
 makeMatcher c lenf matf t
-  | T.null t || lenf t <= 0                                    = Nothing
-  | SomeNat p <- someNatVal . fromIntegral. lenf $ t    = Just . Matcher . matf p c $ t
+  | SomeNat p <- someNatVal . fromIntegral. lenf $ t    = Matcher . matf p c $ t
 
 {-# INLINE withSensitivity #-}
 withSensitivity :: CaseSensitivity -> Text -> Text
@@ -147,8 +146,12 @@ fuzzyMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = build . 
     go !k   = zipWith (\t' l -> (withSensitivity c t' , MatchPart l (l + k -1))) (kConsecutive k t) [0 ..]
 
 -- | Unsized version of fuzzyMatcherSized
-fuzzyMatcher :: CaseSensitivity -> Text -> Maybe (Matcher MatchPart)
+fuzzyMatcher :: CaseSensitivity -> Text -> Matcher MatchPart
 fuzzyMatcher c  = makeMatcher c T.length fuzzyMatcherSized
+
+{-# INLINE emptyMatcher #-}
+emptyMatcher :: MatcherSized 0 a
+emptyMatcher = MatcherSized IgnoreCase (build []) (Left 0)
 
 -- | Constructs the matcher for orderless matching, the needles are the words from the query string and the proxy argument should be instantiated at the
 --  number of words.
@@ -159,7 +162,7 @@ orderlessMatcherSized _ c t = MatcherSized {caseSensitivity = c , machina = buil
     wrds = withSensitivity c <$> T.words t
 
 -- | Unsized version of orderlessMatcherSized
-orderlessMatcher :: CaseSensitivity -> Text -> Maybe (Matcher Int)
+orderlessMatcher :: CaseSensitivity -> Text -> Matcher Int
 orderlessMatcher c = makeMatcher c (length . T.words) orderlessMatcherSized
 
 {-# INLINEABLE fuzzyMatchSized#-}
@@ -192,7 +195,9 @@ parts :: Either Int (U.Vector Int) -- ^ The information about the lengths of dif
   -> Text -- ^ The candidate string that has been matched
   -> U.Vector Int -- ^ The vector recording the positions of the needle in the matched string.
   -> [Text] -- ^ The candidate string split up according to  the match
-parts v t = done . foldl' cut ([] , lengthUtf8 t) . minify v
+parts v t u
+  | U.null u  = [t]
+  |otherwise  =  done . foldl' cut ([] , lengthUtf8 t) . minify v $ u
   where
     done (ms , cp) = unsafeSliceUtf8 0 cp t : ms
     cut  (!ms , !cp) !cc  = (unsafeSliceUtf8 cc (cp - cc) t : ms , cc )

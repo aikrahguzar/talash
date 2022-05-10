@@ -53,7 +53,7 @@ data SearchStateSized (n :: Nat) a = SearchStateSized { _currentQuery :: {-# UNP
                                                       , _matchSet :: !(MatchSetSized n)}
 makeLenses ''SearchStateSized
 
-data SearchFunctions a = SearchFunctions { _makeMatcher :: Text -> Maybe (Matcher a)
+data SearchFunctions a = SearchFunctions { _makeMatcher :: Text -> Matcher a
                                          , _match :: forall n. KnownNat n => MatcherSized n a -> Text -> Maybe (MatchFull n)
                            -- | Given the matcher @m@, the matched string @t@ and the indices of matches in @t@ divide @t@ in alternating strings that are a matches
                            --   and the gap between these matches. The first of these is always a gap and can be empty. The rest should be non empty.
@@ -154,10 +154,7 @@ searchLoop :: KnownNat n => SearchEnv n a -> IO ()
 searchLoop env = maybe (pure ()) (`loop` "") =<< takeMVar (env ^. query)
   where
     loop qry prev
-      | Nothing          <- matcher = maybe (pure ()) (`loop` qry) =<< takeMVar (env ^. query)
-      | Just (Matcher m) <- matcher = maybe (pure ()) (`loop` qry) =<< matcherLoop env qry prev m
-      where
-        matcher = (env ^. searchFunctions . makeMatcher) qry
+      | (Matcher m) <- (env ^. searchFunctions . makeMatcher) qry = maybe (pure ()) (`loop` qry) =<< matcherLoop env qry prev m
 
 fuzzyFunctions :: CaseSensitivity -> SearchFunctions MatchPart
 fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchParts
@@ -183,6 +180,10 @@ makeChunksP _ = makeChunks
 matchSetToVector :: (a -> b) -> MatchSetG a -> V.Vector b
 matchSetToVector f (MatchSetG s) = ST.runST $ setToVectorST f s
 
+{-# INLINE matchSetSizedToVector #-}
+matchSetSizedToVector :: KnownNat n => MatchSetSized n -> U.Vector (ScoredMatchSized n)
+matchSetSizedToVector (MatchSetG s) = U.fromList . DS.toList $ s
+
 {-# INLINEABLE setToVectorST #-}
 setToVectorST :: (a -> b) -> DS.Set a -> ST.ST s (V.Vector b)
 setToVectorST f s = go =<< MV.unsafeNew (DS.size s)
@@ -202,10 +203,10 @@ concatChunks :: KnownNat n => Int -> Chunks n -> V.Vector Text
 concatChunks i (Chunks c) =  V.concatMap SV.fromSized . V.take i $ c
 
 forceChunks :: KnownNat n => Chunks n -> Chunks n
-forceChunks (Chunks v) = Chunks . V.force . V.map SV.force $ v
+forceChunks (Chunks v) = Chunks . V.force $ v
 
 chunksFromStream :: forall n. KnownNat n => I.InputStream Text -> IO (Chunks n)
-chunksFromStream i = Chunks <$> (I.toVector =<< I.mapMaybe (\v -> SV.toSized $ v V.++ V.replicate (n - length v) "") =<< I.chunkVector n i)
+chunksFromStream i = Chunks <$> (I.toVector =<< I.mapMaybe (\v -> map SV.force . SV.toSized $ v V.++ V.replicate (n - length v) "") =<< I.chunkVector n i)
   where
     n = fromInteger $ natVal (Proxy :: Proxy n)
 
@@ -225,63 +226,3 @@ readVectorHandleWith f t h = map t $ I.toVector =<< I.map f =<< I.decodeUtf8 =<<
 
 fileNamesSorted :: Handle -> IO (V.Vector Text)
 fileNamesSorted = readVectorHandleWith (T.takeWhileEnd (/= '/')) (V.uniq . V.modify sort)
-
-data SimpleSearcher = SimpleSearcher {terms :: [Text] , sleepTime :: Int , matchesToPrint :: Int}
-
--- | Outputs a matching candidate for the terminal with the matches highlighted in blue. Uses the `Colored` `Text` monoid from `colorful-monoids` for coloring.
-showMatchColor :: Handle -> [Text] -> IO ()
-showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . fst . foldl' go (Value "" , False) $ t) *> B.hPutStrLn o ""
-  where
-    go (c , False) n = (c <> Value n , True)
-    go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
-
-printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
-printMatches funcs r store m s = when (o == QueryDone || o == NewQuery) (putStrLn $ (T.pack . show $ n) <> " Matches for this round.\n")
-  where
-    o = r ^. ocassion
-    n = r ^. nummatches
-  --   go = traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout $ (funcs ^. display) m (store ! c) v)
-
-printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> MVar () -> SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
-printMatchesMvar funcs v r store m s = when (r ^. ocassion == QueryDone) (putMVar v () *> putStrLn ((T.pack . show $ r ^. nummatches) <> " matches for this round."))
-  -- when (o == QueryDone) (printMatches funcs o n store m s *> putMVar v ())
-
-simpleFuzzyEnv :: KnownNat n => Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart)
-simpleFuzzyEnv n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatches (fuzzyFunctions IgnoreCase)) . makeChunks
-
-simpleFuzzyEnvM :: KnownNat n => MVar () -> Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart)
-simpleFuzzyEnvM m n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatchesMvar (fuzzyFunctions IgnoreCase) m) . makeChunks
-
-simpleFuzzyEnvMI :: KnownNat n => MVar () -> Int -> Proxy n -> Chunks n -> IO (SearchEnv n MatchPart)
-simpleFuzzyEnvMI m n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatchesMvar (fuzzyFunctions IgnoreCase) m)
-
-runSimpleSearcherWithEnv :: KnownNat n => SimpleSearcher -> SearchEnv n MatchPart -> IO ()
-runSimpleSearcherWithEnv s env = forkIO (searchLoop env) *> traverse_ (doSearch . Just) (terms s) *> doSearch Nothing
-  where
-    doSearch term = putMVar (env ^. query) term *> threadDelay (sleepTime s)
-
-runSimpleSearcher :: KnownNat n => Proxy n -> SimpleSearcher -> V.Vector Text -> IO ()
-runSimpleSearcher p s v = runSimpleSearcherWithEnv s =<< simpleFuzzyEnv (matchesToPrint s) p v
-
-runSimpleSearcherWithEnvM :: KnownNat n => SimpleSearcher -> MVar () -> SearchEnv n MatchPart -> IO ()
-runSimpleSearcherWithEnvM s v env = forkIO (searchLoop env) *> traverse_ doSearch (terms s) *> putMVar (env ^. query) Nothing
-  where
-    doSearch term = unless (term == "") $ putMVar (env ^. query) (Just term) *> takeMVar v
-
-runSimpleSearcherM :: KnownNat n => Proxy n -> SimpleSearcher -> V.Vector Text -> IO ()
-runSimpleSearcherM p s v = (\mvar -> runSimpleSearcherWithEnvM s mvar =<< simpleFuzzyEnvM mvar (matchesToPrint s) p v) =<< newEmptyMVar
-
-runSimpleSearcherMI :: KnownNat n => Proxy n -> SimpleSearcher -> Chunks n -> IO ()
-runSimpleSearcherMI p s v = (\mvar -> runSimpleSearcherWithEnvM s mvar =<< simpleFuzzyEnvMI mvar (matchesToPrint s) p v) =<< newEmptyMVar
-
-testVector :: IO (V.Vector Text)
-testVector = toVector =<< I.decodeUtf8 =<< I.lines I.stdin
-
-simpleSearcherTest :: IO ()
-simpleSearcherTest = runSimpleSearcherMI (Proxy :: Proxy 64)
-                                         (SimpleSearcher [ "m" , "ma" , "mal" , "malda" , "maldac" , "maldace" , "maldacen" , "maldacena" , "maldacenaf" , "maldacenafi" , "maldacenafiv" , "maldacenafive"
-                                                        -- , "w" , "wi" , "wit" , "witt" , "witte" , "witten" , "f" , "fr" , "fra" , "fran" , "franc" , "franco"
-                                                        -- , "c" , "cl" , "clo" , "clos" , "closs" , "closse" , "closset" , "s" , "se" , "sen"
-                                                        ] 25000 256)
-                                         =<< chunksFromStream =<< I.decodeUtf8 =<< I.lines I.stdin
--- simpleSearcherTest = runSimpleSearcher (Proxy :: Proxy 32) (SimpleSearcher ["suse", "linux" , "binary" , "close" , "Witten" , "Maldacena" , "Franco" , "Closset"] 100000 1024) =<< testVector

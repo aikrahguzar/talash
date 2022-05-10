@@ -3,7 +3,7 @@
 -- | A simple brick app to search among the candidates from a vector of text and get the selection. By default the app doesn't do anything except
 -- return a single selection but more complicated actions can be performed by using the `_hooks` which allow abitrary IO actions (due to `EventM` being a `MonadIO`)
 -- in response to input events. The most convenient function to use the brick app are `selected` and related functions. `runApp` provides some more flexibility.
-module Talash.Brick (-- * Types
+module Talash.Brick2 (-- * Types
                      Searcher (..) , SearchEvent (..) , SearchEnv (..) ,  EventHooks (..) , AppTheme (..) , AppSettings (..) , CaseSensitivity (..)
                      -- * The Brick App and Helpers
                     , searchApp , defSettings , fuzzyFunctions , orderlessFunctions , runApp , runAppFromHandle , selected , selectedFromHandle
@@ -31,7 +31,7 @@ import qualified Data.Text as T
 import Data.Vector (Vector , force , take , unsafeIndex , elemIndex)
 import GHC.Compact (Compact , compact , getCompact)
 import System.Environment (getArgs)
-import Talash.Brick.Internal
+import Talash.Brick.Internal2
 import Talash.Core hiding (makeMatcher , match)
 import Talash.Files
 import Talash.Intro hiding (sort, on , take)
@@ -49,23 +49,12 @@ data AppTheme = AppTheme { _prompt :: Text -- ^ The prompt to display next to th
                          }
 makeLenses ''AppTheme
 
-type SearchEvent = SearchEventG Vector [Text]
-type Searcher = SearcherG Vector [Text]
-type AppSettings n a = AppSettingsG n Vector a [Text] AppTheme
+type AppSettings n a = AppSettingsG n a AppTheme
 
 -- | The brick widget used to display the editor and the search result.
-searcherWidget :: Text -> Searcher -> Widget Bool
-searcherWidget p s = joinBorders . border $     searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
-                                            <=> hBorder  <=> joinBorders (listWithHighlights "➜ " id False (s ^. matches))
-
-{-# INLINE generateSearchEvent #-}
-generateSearchEvent :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> (SearchReport -> Bool) -> BChan SearchEvent -> SearchReport -> Chunks n
-                                                                                -> MatcherSized m a -> MatchSetSized m -> IO ()
-generateSearchEvent f p = go
-  where
-    go b r c m s = when (p r) $ writeBChan b event
-      where
-        event = SearchEvent (matchSetToVector (\mtch -> (f ^. display) m (c ! chunkIndex mtch) (matchData mtch)) s) (r ^. nummatches) (r ^. searchedTerm)
+searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> SearcherSized m a -> Widget Bool
+searcherWidget env p s = joinBorders . border $     searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
+                                                <=> hBorder  <=> joinBorders (listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches))
 
 defThemeAttrs :: [(AttrName, Attr)]
 defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , ("Prompt" , withStyle (white `on` blue) bold)
@@ -77,47 +66,45 @@ defTheme = AppTheme {_prompt = "Find: " , _themeAttrs = defThemeAttrs , _borderS
 -- | Default settings. Uses blue for various highlights and cyan for borders. All the hooks except keyHook which is `handleKeyEvent` are trivial.
 {-# INLINE defSettings#-}
 defSettings :: KnownNat n => AppSettings n a
-defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKeyEvent (:[]) e})) Proxy 1024 (\r -> r ^. ocassion == QueryDone)
+defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKeyEvent e})) Proxy 1024 (\r -> r ^. ocassion == QueryDone)
 
 -- | Tha app itself. `selected` and the related functions are probably more convenient for embedding into a larger program.
-searchApp :: AppSettings n a -> SearchEnv n a -> App Searcher SearchEvent Bool
-searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = pure , appAttrMap = am}
+searchApp ::KnownNat n => AppSettings n a -> SearchEnv n a -> App (Searcher a) (SearchEvent a) Bool
+searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = as , appAttrMap = am}
   where
-    ad                                    = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. prompt)
-    am                                    = const $ attrMap defAttr (th ^. themeAttrs)
-    hk                                    = runReaderT hks env
-    he s (VtyEvent (EvKey k m))           = keyHook hk k m s
-    he s (VtyEvent (EvMouseDown i j b m)) = mouseDownHook   hk i j b m s
-    he s (VtyEvent (EvMouseUp   i j b  )) = mouseUpHook     hk i j b   s
-    he s (VtyEvent (EvPaste     b      )) = pasteHook       hk     b   s
-    he s (VtyEvent  EvGainedFocus       ) = focusGainedHook hk         s
-    he s (VtyEvent  EvLostFocus         ) = focusLostHook   hk         s
-    he s (AppEvent e)                     = if e ^. term == getQuery s then handleSearch s e else continue s
-    he s _                                = continue s
-
--- | The initial state of the searcher. The editor is empty, the first @512@ elements of the vector are disaplyed as matches.
-initialSearcher :: forall n a. KnownNat n => SearchEnv n a -> BChan SearchEvent -> Searcher
-initialSearcher env source = Searcher (editorText True (Just 1) "") (list False ((:[]) <$> concatChunks k (env ^. candidates)) 0) source 0
-  where
-    n = natVal (Proxy :: Proxy n)
-    k = 1 + (env ^. maxMatches) `div` fromInteger n
+    ad (Searcher s)                                  = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget env (th ^. prompt) $ s
+    as s                                             = liftIO (sendQuery env "") $> s
+    am                                               = const $ attrMap defAttr (th ^. themeAttrs)
+    hk                                               = runReaderT hks env
+    he s (VtyEvent (EvKey k m))                      = keyHook hk k m s
+    he s (VtyEvent (EvMouseDown i j b m))            = mouseDownHook   hk i j b m s
+    he s (VtyEvent (EvMouseUp   i j b  ))            = mouseUpHook     hk i j b   s
+    he s (VtyEvent (EvPaste     b      ))            = pasteHook       hk     b   s
+    he s (VtyEvent  EvGainedFocus       )            = focusGainedHook hk         s
+    he s (VtyEvent  EvLostFocus         )            = focusLostHook   hk         s
+    he s@(Searcher s') (AppEvent e@(SearchEvent e')) = if e' ^. term == getQuery s' then handleSearch s e else continue s
+    he s _                                           = continue s
 
 -- | Run app with given settings and return the final Searcher state.
-runApp :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO Searcher
-runApp s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . initialSearcher env $ b) (stopSearcher env))
+runApp :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Searcher a)
+runApp s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . Searcher . initialSearcher env $ b) (stopSearcher env))
                =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO Searcher
+runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Searcher a)
 runAppFromHandle s f = runApp s f . getCompact <=< compact . forceChunks <=< chunksFromHandle (s ^. chunkSize)
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromVector :: KnownNat n =>  AppSettings n a -> SearchFunctions a -> Vector Text -> IO Searcher
+runAppFromVector :: KnownNat n =>  AppSettings n a -> SearchFunctions a -> Vector Text -> IO (Searcher a)
 runAppFromVector s f = runApp s f . getCompact <=< compact . forceChunks . makeChunks
+
+
+selectedElement :: KnownNat n => Chunks n -> Searcher a -> Maybe Text
+selectedElement c (Searcher s) = (map ((c !) . chunkIndex . snd) . listSelectedElement . (^. matches)) s
 
 -- | Run app and return the text of the selection if there is one else Nothing.
 selected :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Maybe Text)
-selected s f  = map (map (mconcat . snd) . listSelectedElement . (^. matches)) . runApp s f . getCompact <=< compact . forceChunks
+selected s f = (\c -> map (selectedElement c) . runApp s f $ c) . getCompact <=< compact . forceChunks
 
 -- | Same as `selected` but reads the vector from the supplied handle.
 selectedFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
