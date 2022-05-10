@@ -1,7 +1,6 @@
 -- |
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -13,10 +12,12 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
 import qualified Control.Monad.ST as ST
 import Data.Bit
-import qualified Data.Bit as MS
+import qualified Data.ByteString.Char8 as B
 import Data.Maybe (fromJust)
+import Data.Monoid.Colorful
 import qualified Data.Set as DS
 import qualified Data.Text as T
+import Data.Text.AhoCorasick.Automaton (CaseSensitivity(..))
 import qualified Data.Vector as V
 import Data.Vector.Algorithms.Intro (sort)
 import qualified Data.Vector.Mutable as MV
@@ -27,13 +28,12 @@ import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeLits
 import Lens.Micro
+import Lens.Micro.TH as Export ( makeLenses )
 import System.IO.Streams (toVector)
 import qualified System.IO.Streams as I
 import Talash.Core hiding (match , makeMatcher)
 import Talash.Files
-import Talash.Internal hiding (makeMatcher , readVectorHandleWith)
 import Talash.Intro hiding (splitAt)
-import Talash.Piped (showMatchColor)
 import Talash.ScoredMatch
 
 newtype Chunks (n:: Nat) = Chunks { chunks ::  V.Vector (SV.Vector n Text)} deriving (Eq , Ord , Show)
@@ -227,6 +227,13 @@ fileNamesSorted :: Handle -> IO (V.Vector Text)
 fileNamesSorted = readVectorHandleWith (T.takeWhileEnd (/= '/')) (V.uniq . V.modify sort)
 
 data SimpleSearcher = SimpleSearcher {terms :: [Text] , sleepTime :: Int , matchesToPrint :: Int}
+
+-- | Outputs a matching candidate for the terminal with the matches highlighted in blue. Uses the `Colored` `Text` monoid from `colorful-monoids` for coloring.
+showMatchColor :: Handle -> [Text] -> IO ()
+showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . fst . foldl' go (Value "" , False) $ t) *> B.hPutStrLn o ""
+  where
+    go (c , False) n = (c <> Value n , True)
+    go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
 
 printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
 printMatches funcs r store m s = when (o == QueryDone || o == NewQuery) (putStrLn $ (T.pack . show $ n) <> " Matches for this round.\n")

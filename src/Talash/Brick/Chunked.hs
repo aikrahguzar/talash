@@ -1,4 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
 
 -- | A simple brick app to search among the candidates from a vector of text and get the selection. By default the app doesn't do anything except
 -- return a single selection but more complicated actions can be performed by using the `_hooks` which allow abitrary IO actions (due to `EventM` being a `MonadIO`)
@@ -42,67 +41,13 @@ import Talash.ScoredMatch (ScoredMatchSized(chunkIndex, matchData))
 import Data.Text.AhoCorasick.Automaton (CaseSensitivity(..))
 import qualified System.IO.Streams as I
 
-data SearchEvent = SearchEvent { -- | The matches received.
-                                 _matchedTop :: Vector [Text]
-                                 -- | The (maximum possible) number of matches. See the note on `_numMatches`.
-                               , _totMatches :: Int
-                                 -- | The term which was searched for.
-                               , _term :: Text}
-makeLenses ''SearchEvent
-
-data Searcher a = Searcher { -- | The editor to get the query from.
-                             _queryEditor :: Editor Text Bool
-                           -- | The matches received split up as alternating sequences of match substrings and the gap between them. The first substring is always a gap
-                           --   and can be empty, the rest should be no empty.
-                           , _matches :: List Bool [Text]
-                           -- | The (maximum possible) number of matches. This is the length of vector stored in `_allMatches` which also contains the indices of
-                           --   which weren't matched in case enough matches were found before going through all the candidates.
-                           , _eventSource :: BChan SearchEvent -- ^ The BChan from which the app receives search events.
-                           , _numMatches :: Int
-                           -- | ThreadId of the thread currently computing matches. Nothing if there is no such thread.
-                           , _extension :: a} deriving (Functor)
-makeLenses ''Searcher
-
--- | Event hooks are almost direct translations of the events from vty i.e. see `Event`.
-data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Bool (Next a)
-                               , pasteHook :: ByteString -> a -> EventM Bool (Next a)
-                               , resizeHook :: Int -> Int -> a -> EventM Bool (Next a)
-                               , mouseDownHook :: Int -> Int -> Button -> [Modifier] -> a -> EventM Bool (Next a)
-                               , mouseUpHook   :: Int -> Int -> Maybe Button -> a -> EventM Bool (Next a)
-                               , focusLostHook :: a -> EventM Bool (Next a)
-                               , focusGainedHook :: a -> EventM Bool (Next a)}
-
-data AppTheme = AppTheme { _prompt :: Text -- ^ The prompt to display next to the editor.
-                         , _themeAttrs :: [(AttrName, Attr)]  -- ^ This is used to construct the `attrMap` for the app. By default the used attarNmaes are
-                                                              --  `listSelectedAttr` , `borderAttr` , \"Prompt\" , \"Highlight\" and \"Stats\"
-                         , _borderStyle :: BorderStyle -- ^ The border style to use. By default `unicodeRounded`
-                         }
-makeLenses ''AppTheme
-
-data AppSettings (n :: Nat) a b = AppSettings { _theme :: AppTheme
-                                              , _hooks :: ReaderT (SearchEnv n a) EventHooks (Searcher b) -- ^ The event hooks which can make use of the search environment.
-                                              , _chunkSize :: Proxy n
-                                              , _maximumMatches :: Int
-                                              , _eventStrategy :: SearchReport -> Bool}
-makeLenses ''AppSettings
-
-defHooks :: EventHooks a
-defHooks = EventHooks (const . const continue) (const continue) (const . const continue) (const . const . const . const continue)
-                                (const . const . const continue) continue continue
--- | Quit without any selection.
-haltQuit :: Searcher a -> EventM n (Next (Searcher a))
-haltQuit = halt . ((matches . listSelectedL) .~ Nothing)
-
-getQuery :: Searcher a -> Text
-getQuery s = fromMaybe "" . listToMaybe . getEditContents $ s ^. queryEditor
-
 -- | Handling of keypresses. The default bindings are
 --  @Enter@ exits the app with the current selection.
 --  @Esc@ exits without any selection
 --  @Up@ , @Down@ , @PageUp@ and @PageDown@ move through the matches.
 -- All others keys are used for editing the query. See `handleEditorEvent` for details.
 {-# INLINE handleKeyEvent #-}
-handleKeyEvent :: KnownNat n => SearchEnv n a -> Key -> [Modifier] -> Searcher b -> EventM Bool (Next (Searcher b))
+handleKeyEvent :: KnownNat n => SearchEnv n a -> Key -> [Modifier] -> Searcher -> EventM Bool (Next (Searcher))
 handleKeyEvent env k m s
   | k == KEnter                                  , null m = halt s
   | k == KEsc                                    , null m = haltQuit s
@@ -117,11 +62,11 @@ handleKeyEvent env k m s
       where
         nq = getQuery ns
 
-handleSearch :: Searcher a -> SearchEvent -> EventM Bool (Next (Searcher a))
+handleSearch :: Searcher -> SearchEvent -> EventM Bool (Next (Searcher))
 handleSearch s e = continue . (numMatches .~ e ^. totMatches) . (matches %~ listReplace (e ^. matchedTop) (Just 0)) $ s
 
 -- | The brick widget used to display the editor and the search result.
-searcherWidget :: Text -> Searcher a -> Widget Bool
+searcherWidget :: Text -> Searcher -> Widget Bool
 searcherWidget p s = joinBorders . border $     searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
                                             <=> hBorder  <=> joinBorders (listWithHighlights "➜ " id False (s ^. matches))
 
@@ -143,11 +88,11 @@ defTheme = AppTheme {_prompt = "Find: " , _themeAttrs = defThemeAttrs , _borderS
 
 -- | Default settings. Uses blue for various highlights and cyan for borders. All the hooks except keyHook which is `handleKeyEvent` are trivial.
 {-# INLINE defSettings#-}
-defSettings :: KnownNat n => AppSettings n a b
+defSettings :: KnownNat n => AppSettings n a
 defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKeyEvent e})) Proxy 1024 (\r -> r ^. ocassion == QueryDone)
 
 -- | Tha app itself. `selected` and the related functions are probably more convenient for embedding into a larger program.
-searchApp :: AppSettings n a b -> SearchEnv n a -> App (Searcher b) SearchEvent Bool
+searchApp :: AppSettings n a -> SearchEnv n a -> App (Searcher) SearchEvent Bool
 searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = pure , appAttrMap = am}
   where
     ad                                    = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget (th ^. prompt)
@@ -163,59 +108,59 @@ searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor 
     he s _                                = continue s
 
 -- | The initial state of the searcher. The editor is empty, the first @512@ elements of the vector are disaplyed as matches.
-initialSearcher :: forall n a b. KnownNat n => SearchEnv n a -> BChan SearchEvent -> b -> Searcher b
+initialSearcher :: forall n a. KnownNat n => SearchEnv n a -> BChan SearchEvent -> Searcher
 initialSearcher env source = Searcher (editorText True (Just 1) "") (list False ((:[]) <$> concatChunks k (env ^. candidates)) 0) source 0
   where
     n = natVal (Proxy :: Proxy n)
     k = 1 + (env ^. maxMatches) `div` fromInteger n
 
-resetSearcher :: forall n a b. KnownNat n => SearchEnv n a -> Searcher b -> Searcher b
+resetSearcher :: forall n a b. KnownNat n => SearchEnv n a -> Searcher -> Searcher
 resetSearcher env = (numMatches .~ 0) . (matches .~ list False ((:[]) <$> concatChunks k (env ^. candidates)) 0)
   where
     n = natVal (Proxy :: Proxy n)
     k = 1 + (env ^. maxMatches) `div` fromInteger n
 
 -- | Run app with given settings and return the final Searcher state.
-runApp :: KnownNat n => b -> AppSettings n a b -> SearchFunctions a -> Chunks n -> IO (Searcher b)
-runApp e s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . initialSearcher env b $ e) (stopSearcher env))
-                 =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
+runApp :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Searcher)
+runApp s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . initialSearcher env $ b) (stopSearcher env))
+               =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromHandle :: KnownNat n => b -> AppSettings n a b -> SearchFunctions a -> Handle -> IO (Searcher b)
-runAppFromHandle e s f = runApp e s f . getCompact <=< compact . forceChunks <=< chunksFromHandle (s ^. chunkSize)
+runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Searcher)
+runAppFromHandle s f = runApp s f . getCompact <=< compact . forceChunks <=< chunksFromHandle (s ^. chunkSize)
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromVector :: KnownNat n => b -> AppSettings n a b -> SearchFunctions a -> Vector Text -> IO (Searcher b)
-runAppFromVector e s f = runApp e s f . getCompact <=< compact . forceChunks . makeChunks
+runAppFromVector :: KnownNat n =>  AppSettings n a -> SearchFunctions a -> Vector Text -> IO (Searcher)
+runAppFromVector s f = runApp s f . getCompact <=< compact . forceChunks . makeChunks
 
 -- | Run app and return the text of the selection if there is one else Nothing.
-selected :: KnownNat n => AppSettings n a () -> SearchFunctions a -> Chunks n -> IO (Maybe Text)
-selected s f  = map (map (mconcat . snd) . listSelectedElement . (^. matches)) . runApp () s f . getCompact <=< compact . forceChunks
+selected :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Maybe Text)
+selected s f  = map (map (mconcat . snd) . listSelectedElement . (^. matches)) . runApp s f . getCompact <=< compact . forceChunks
 
 -- | Same as `selected` but reads the vector from the supplied handle.
-selectedFromHandle :: KnownNat n => AppSettings n a () -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
 selectedFromHandle s f = selected s f <=< chunksFromHandle (s ^. chunkSize)
 
 -- | Same as `selectedFromHandle` but allows for transforming the lines read and the final vector with supplied functions. See also `readVectorHandleWith`.
-selectedFromHandleWith :: KnownNat n => (Text -> Text) -> (Vector Text -> Vector Text) -> AppSettings n a () -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromHandleWith :: KnownNat n => (Text -> Text) -> (Vector Text -> Vector Text) -> AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
 selectedFromHandleWith w t s f = selected s f . makeChunks <=< readVectorHandleWith w t
 
 -- | Another variation on `selectedFromHandle`. See `fileNamesSorted` for what happens to read vector.
-selectedFromFileNamesSorted :: KnownNat n => AppSettings n a () -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromFileNamesSorted :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
 selectedFromFileNamesSorted s f = selected s f .  makeChunks <=< fileNamesSorted
 
 -- | Version of `selected` for file search using a simple implementation of searching file trees from "Talash.Files". Better to use either other
 -- libraries like @unix-recursive@ or external programs like @fd@ for more complicated tasks.
-selectedFromFiles :: KnownNat n => AppSettings n a () -> SearchFunctions a -> [FindInDirs] -> IO (Maybe Text)
+selectedFromFiles :: KnownNat n => AppSettings n a -> SearchFunctions a -> [FindInDirs] -> IO (Maybe Text)
 selectedFromFiles s f = selected s f . forceChunks . makeChunks . (flatten =<<) <=< findFilesInDirs
 
-selectedUsing :: KnownNat n => AppSettings n a () -> SearchFunctions a -> (a -> Text) -> Vector a -> IO (Maybe a)
+selectedUsing :: KnownNat n => AppSettings n a -> SearchFunctions a -> (a -> Text) -> Vector a -> IO (Maybe a)
 selectedUsing s f t v = map (map (unsafeIndex v) . (`elemIndex` w) =<<) . selected s f . makeChunks $ w
   where
     w = map t v
 
 -- | A version of `selected` that puts the selected text on the stdout.
-runSearch :: AppSettings 64 a () -> SearchFunctions a -> IO ()
+runSearch :: AppSettings 64 a -> SearchFunctions a -> IO ()
 runSearch s f = maybe (pure ()) putStrLn =<< selected s f =<< chunksFromStream =<< I.decodeUtf8 =<< I.lines I.stdin
 
 -- | The backend for `run`

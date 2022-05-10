@@ -15,7 +15,7 @@ module Talash.Core ( -- * Types
                      -- ** Orderless Style
                      , orderlessMatcherSized , orderlessMatcher , orderlessMatchSized , orderlessMatch , orderlessMatchParts
                      -- * Search
-                     , fuzzySettings , orderlessSettings  ,  searchSome , parts , partsOrderless , minify) where
+                     , fuzzySettings , orderlessSettings , parts , partsOrderless , minify) where
 
 import Control.Monad.ST (ST, runST)
 import qualified Data.Text as T
@@ -237,52 +237,3 @@ fuzzySettings !m = SearchSettings { match = fuzzyMatchSized , fullscore = \t -> 
 --   @["tal","as","h","be","st"]@ but @"talash best"@ will not match @"bet"@.
 orderlessSettings :: KnownNat n => Int -> SearchSettings (MatcherSized n Int) n
 orderlessSettings n = SearchSettings {match = orderlessMatchSized , fullscore = const 0, maxFullMatches = n , orderAs = defOrdering}
-
--- | Given a matcher, search for matches in a vector of text. This function only searches for matches among the strings at indices which are in 3rd argument.
-searchSome :: forall a n. KnownNat n => SearchSettings a n -- ^ The configuration for finding matches
-  -> a -- ^ The matcher
-  -> V.Vector Text -- ^ The vector of candidates
-  -> U.Vector Int -- ^ The subset of indices of candidates to search from
-  -> (U.Vector Int , U.Vector (Indices n)) -- ^ The new set of filtered indices in the vector and the vector containing the indices for each match found.
-searchSome config !t v i = runST $ uncurry (searchSomeST config t v i)
-                                   =<< ((,) <$> M.unsafeNew (U.length i)
-                                            <*> V.replicateM (fullscore config t + 1) (M.unsafeNew (min (U.length i) $ maxFullMatches config)))
-
--- This functions is somewhat ridiculous and probably over optimized. Its only purpose is to be used in searchSome. searchSome can more simply be written as
--- a mapMaybe followed by a sort but this doesn't allow for a early termination of matching once we have found enough matches. A streaming solution will probably
--- be simpler for generating the candidates but will still need to be read into a vector and sorted so for now this works and is fast enough.
-
-{-# INLINEABLE searchSomeST #-}
-searchSomeST :: forall s a n. KnownNat n => SearchSettings a n -- ^
-  -> a -> V.Vector Text -> U.Vector Int -> M.STVector s Int -- ^ The mutable vector into which we write the new filtered indices
-  -> V.Vector (M.STVector s (Indices n)) -- ^ The vector @mv@ containing the buckets i.e. mutable vectors one for each possible score gathering the matches
-  ->  ST s (U.Vector Int , U.Vector (Indices n)) -- ^ The final vector of filtered indices and the vector of
-searchSomeST config !t v i mi mv = end =<< U.foldM' go (0, U.replicate (fullscore config t + 1) 0) i
-  where
-    -- If we don't have enough matches with the highest score, @cc@ goes through other score in the decreasing order filling up the bucket of highest order.
-    -- Stopping when either the bucket is full or else we have run through all the scores. Before filling each bucket is sorted according the ordering supplied  
-    -- by the configuration. Once the filling is done this bucket is frozen see `sortTake` and returned along with the frozen vector of filtered indcies see `end`.
-    end (l , u)  = (,) <$> (U.unsafeFreeze . M.unsafeTake l $ mi) <*> sortTake u
-    sortTake u = (\l -> U.unsafeFreeze . M.unsafeTake l $ msv) =<< (doSort (-1) (U.unsafeLast u) *> U.ifoldM' cc (U.unsafeLast u) (U.reverse . U.unsafeInit $ u))
-    msv = V.unsafeLast mv
-    cc r ix n
-      | r >= maxFullMatches config     = pure r
-      | r + n <= maxFullMatches config = doSort ix n *> doFill r (fullscore config t - 1 - ix) n $> r + n
-      | otherwise                      = doSort ix n *> doFill r (fullscore config t - 1 - ix) (maxFullMatches config - r) $> maxFullMatches config
-    doFill r ix n = traverse_ (\k -> M.unsafeWrite msv (r+k) =<< M.unsafeRead (V.unsafeIndex mv ix) k) [0 .. n-1]
-    doSort   ix   = V.sortByBounds cmfn (V.unsafeIndex mv (fullscore config t - 1 - ix)) 0
-    cmfn (!i1,!s1) (!i2,!s2) =  orderAs config (V.unsafeIndex v i1) s1 (V.unsafeIndex v i2) s2
-    bstMch = match config t . V.unsafeIndex v
-    bign   = (>= maxFullMatches config)
-    -- The idx is the number of total number of matches that have been written up to now. nf is the vector carrying the same information for each bucket.
-    -- elm is current index to check for a match. So we check if v ! elem is a match, if it is we write the match into the appropriate bucket and elem into
-    -- the vector of filtered indices  and increment idx and the appropriate index of nf. If we have already reached the needed number of matches of full score
-    -- we instead just skip matching and write idx into the vector of filtered indices.
-    go (!idx , !nf) !elm
-      | bign (U.last nf)                                                  = M.unsafeWrite mi idx elm $> (idx + 1 , nf)
-      | Just !mch <- bstMch elm , bign (U.unsafeIndex nf (scored mch))    = M.unsafeWrite mi idx elm $> (idx + 1 , nf)
-      | Just (MatchFull !s !ixs) <- bstMch elm                            = M.unsafeWrite mi idx elm *> wrt s ixs $> inc s
-      | otherwise                                                         = pure (idx , nf)
-      where
-        wrt s ixs = M.unsafeWrite (V.unsafeIndex mv s) (U.unsafeIndex nf s) (elm , ixs)
-        inc s = (idx + 1 , U.modify (\mu -> M.unsafeModify mu (+1) s) nf)
