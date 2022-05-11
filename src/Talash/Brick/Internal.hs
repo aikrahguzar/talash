@@ -89,7 +89,6 @@ haltQuit = halt . ((matches . listSelectedL) .~ Nothing)
 getQuery :: SearcherG v a -> Text
 getQuery s = fromMaybe "" . listToMaybe . getEditContents $ s ^. queryEditor
 
-
 twoColumnText :: Int -> Text -> Text -> Widget n
 twoColumnText n t1 t2 =  joinBorders . vLimit 1 $ go n t1 <+> go 100 t2
   where
@@ -99,21 +98,22 @@ columns :: (a -> Widget n) -> [AttrName] -> [Int] -> [a] -> Widget n
 columns f as ls = vLimit 1 . hBox . zipWith3 (\a l t -> hLimitPercent l $ (padRight (Pad 2) . withAttr a . f $ t) <+> fill ' ') as ls
 
 searchWidget :: (Ord n , Show n) => Bool -> Text -> Editor Text n -> Widget n
-searchWidget b p e = withAttr "Prompt" (padLeftRight 2 . txt $ p) <+> padLeftRight 2 (renderEditor (hBox . map txt) b e)
+searchWidget b p e = hBox [withAttr "Prompt" (padLeftRight 2 . txt $ p) , padLeftRight 2 (renderEditor (hBox . map txt) b e)]
 
 searchWidgetAux :: (Ord n , Show n) => Bool -> Text -> Editor Text n -> Widget n -> Widget n
-searchWidgetAux b p e w = withAttr "Prompt" (padLeftRight 2 . txt $ p) <+> padLeftRight 2 (renderEditor (hBox . map txt) b e) <+> w
+searchWidgetAux b p e w = hBox [withAttr "Prompt" (padLeftRight 2 . txt $ p) , padLeftRight 2 (renderEditor (hBox . map txt) b e) , w]
 
-highlightAlternate :: Foldable f => (a -> Widget n) -> f a -> Widget n
-highlightAlternate f = fst . foldl' (\(!w , !b) !n  -> (w <+> if b then withAttr "Highlight" (f n) else f n , not b)) (emptyWidget , False)
+highlightAlternate :: (a -> Widget n) -> [a] -> Widget n
+highlightAlternate f = hBox . zipWith (\b e -> if b then withAttr "Highlight" (f e) else f e) (cycle [False , True])
+  -- fst . foldl' (\(!w , !b) !n  -> (w <+> if b then withAttr "Highlight" (f n) else f n , not b)) (emptyWidget , False)
 
 headingAndBody :: Text -> Text -> Widget n
 headingAndBody h b = withAttr "Heading" (txt h) <=> txtWrap b
 
-listWithHighlights :: (Foldable f , Ord n , Show n) => Text -> (a -> f Text) -> Bool -> List n a -> Widget n
-listWithHighlights c f = renderList (\s e -> vLimit 1 . (txt (if s then c else "  ") <+>) . (<+> fill ' ') . highlightAlternate txt . f $! e)
+listWithHighlights :: (Ord n , Show n) => Text -> (a -> [Text]) -> Bool -> List n a -> Widget n
+listWithHighlights c f = renderList (\s e -> vLimit 1 . hBox $ [txt (if s then c else "  ") , highlightAlternate txt . f $ e , fill ' '])
 
-columnsListWithHighlights :: (Foldable f , Ord n , Show n) => Text -> (a -> [f Text]) -> [AttrName] -> [Int] -> Bool -> List n a -> Widget n
+columnsListWithHighlights :: (Ord n , Show n) => Text -> (a -> [[Text]]) -> [AttrName] -> [Int] -> Bool -> List n a -> Widget n
 columnsListWithHighlights c f as ls = renderList (\s e -> (txt (if s then c else "  ") <+>) . columns (highlightAlternate txt) as ls . f $! e)
 
 theMain :: Ord n => App b e n -> BChan e -> b -> IO b
@@ -141,8 +141,7 @@ drawListElements foc l drawElem =
                                   else id
                 in makeVisible elemWidget
         render $ viewport (l^.L.listNameL) Vertical $
-                 translateBy (Location (0, off)) $
-                 vBox $ zipWith drawElement [start .. ] . toList $ es
+                 translateBy (Location (0, off)) $ vBox . zipWith drawElement [start ..] . toList $ es
 
 {-# INLINE renderListWithIndex #-}
 renderListWithIndex :: (Ord n, Show n, Foldable t, L.Splittable t) => (Int -> Bool -> a -> Widget n) -> Bool -> GenericList n t a -> Widget n
@@ -182,4 +181,4 @@ resetSearcher f env = (numMatches .~ 0) . (matches .~ list False (f <$> concatCh
 
 {-# INLINE  handleSearch #-}
 handleSearch :: (Foldable v , L.Splittable v) => SearcherG v a -> SearchEventG v a -> EventM Bool (Next (SearcherG v a))
-handleSearch s e = continue . (numMatches .~ e ^. totMatches) . (matches %~ listReplace (e ^. matchedTop) (Just 0)) $ s
+handleSearch s !e = continue . (numMatches .~ e ^. totMatches) . (matches %~ listReplace (e ^. matchedTop) (Just 0)) $ s

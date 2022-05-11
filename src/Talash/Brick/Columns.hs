@@ -93,11 +93,11 @@ searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor 
     he s _                                = continue s
 
 {-# INLINE generateSearchEvent #-}
-generateSearchEvent :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> (SearchReport -> Bool) -> BChan SearchEvent -> SearchReport -> Chunks n
+generateSearchEvent :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> (SearchReport -> Bool) -> BChan SearchEvent -> Chunks n -> SearchReport
                                                                                 -> MatcherSized m a -> MatchSetSized m -> IO ()
-generateSearchEvent f p = go
+generateSearchEvent f p b c = go
   where
-    go b r c m s = when (p r) $ writeBChan b event
+    go r m s = when (p r) $ writeBChan b event
       where
         event = SearchEvent (matchSetToVector (\mtch -> partsColumns $ (f ^. display) m (c ! chunkIndex mtch) (matchData mtch)) s) (r ^. nummatches) (r ^. searchedTerm)
 

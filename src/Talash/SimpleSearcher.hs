@@ -28,14 +28,15 @@ showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . f
     go (c , False) n = (c <> Value n , True)
     go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
 
-printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
-printMatches funcs r store m s = when (o == QueryDone || o == NewQuery) (putStrLn $ (T.pack . show $ n) <> " Matches for this round.\n")
+printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatches funcs store r m s = when (o == QueryDone || o == NewQuery) (putStrLn $ (T.pack . show $ n) <> " Matches for this round.\n")
   where
     o = r ^. ocassion
     n = r ^. nummatches
 
-printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> MVar () -> SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
-printMatchesMvar funcs v r store m s = when (r ^. ocassion == QueryDone) (putMVar v () *> putStrLn ((T.pack . show $ r ^. nummatches) <> " matches for this round."))
+printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> MVar () -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatchesMvar funcs v store r m s = when (r ^. ocassion == QueryDone) (putMVar v () *> putStrLn ((T.pack . show $ r ^. nummatches) <> " matches for this round.")
+                                                          *> traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout . (funcs ^. display) m (store ! c) $ v) s)
   -- when (o == QueryDone) (printMatches funcs o n store m s *> putMVar v ())
 
 simpleFuzzyEnv :: KnownNat n => Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart)
@@ -73,8 +74,8 @@ simpleSearcherTest :: IO ()
 simpleSearcherTest = runSimpleSearcherMI (Proxy :: Proxy 64)
                                          (SimpleSearcher [ "m" , "ma" , "mal" , "malda" , "maldac" , "maldace" , "maldacen" , "maldacena" , "maldacenaf" , "maldacenafi" , "maldacenafiv" , "maldacenafive"
                                                          , "maldacenafiv"
-                                                        -- , "w" , "wi" , "wit" , "witt" , "witte" , "witten" , "f" , "fr" , "fra" , "fran" , "franc" , "franco"
-                                                        -- , "c" , "cl" , "clo" , "clos" , "closs" , "closse" , "closset" , "s" , "se" , "sen"
+                                                         , "w" , "wi" , "wit" , "witt" , "witte" , "witten" , "f" , "fr" , "fra" , "fran" , "franc" , "franco"
+                                                         , "c" , "cl" , "clo" , "clos" , "closs" , "closse" , "closset" , "s" , "se" , "sen"
                                                         ] 25000 256)
                                          . forceChunks =<< chunksFromStream =<< I.decodeUtf8 =<< I.lines I.stdin
 -- simpleSearcherTest = runSimpleSearcher (Proxy :: Proxy 32) (SimpleSearcher ["suse", "linux" , "binary" , "close" , "Witten" , "Maldacena" , "Franco" , "Closset"] 100000 1024) =<< testVector

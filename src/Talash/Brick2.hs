@@ -53,8 +53,8 @@ type AppSettings n a = AppSettingsG n a AppTheme
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> SearcherSized m a -> Widget Bool
-searcherWidget env p s = joinBorders . border $     searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
-                                                <=> hBorder  <=> joinBorders (listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches))
+searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
+                                                     , hBorder , listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches)]
 
 defThemeAttrs :: [(AttrName, Attr)]
 defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , ("Prompt" , withStyle (white `on` blue) bold)
@@ -66,7 +66,8 @@ defTheme = AppTheme {_prompt = "Find: " , _themeAttrs = defThemeAttrs , _borderS
 -- | Default settings. Uses blue for various highlights and cyan for borders. All the hooks except keyHook which is `handleKeyEvent` are trivial.
 {-# INLINE defSettings#-}
 defSettings :: KnownNat n => AppSettings n a
-defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKeyEvent e})) Proxy 1024 (\r -> r ^. ocassion == QueryDone)
+defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKeyEvent e})) Proxy 4096
+                          (\r -> r ^. ocassion == QueryDone)
 
 -- | Tha app itself. `selected` and the related functions are probably more convenient for embedding into a larger program.
 searchApp ::KnownNat n => AppSettings n a -> SearchEnv n a -> App (Searcher a) (SearchEvent a) Bool

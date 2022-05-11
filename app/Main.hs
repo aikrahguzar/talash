@@ -1,6 +1,6 @@
 module Main where
 
-import qualified Talash.Brick as B
+import qualified Talash.Brick2 as B
 -- import qualified Talash.Piped as P
 import qualified Talash.SimpleSearcher as S
 import Talash.Intro

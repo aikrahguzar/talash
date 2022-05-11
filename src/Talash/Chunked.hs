@@ -37,19 +37,16 @@ import Talash.Intro hiding (splitAt)
 import Talash.ScoredMatch
 
 newtype Chunks (n:: Nat) = Chunks { chunks ::  V.Vector (SV.Vector n Text)} deriving (Eq , Ord , Show)
-newtype MatchSetG a = MatchSetG {matchset :: DS.Set a} deriving (Eq , Ord , Show , Semigroup , Monoid , Foldable)
-type MatchSetSized n = MatchSetG (ScoredMatchSized n)
+type MatchSetSized n = DS.Set (ScoredMatchSized n)
 
 data Ocassion = ChunkSearched | QueryDone | NewQuery | SearchDone deriving (Eq , Ord , Show)
-
-instance Splittable MatchSetG where
-  splitAt n = bimap MatchSetG MatchSetG . DS.splitAt n . matchset
 
 data SearchStateSized (n :: Nat) a = SearchStateSized { _currentQuery :: {-# UNPACK #-} !Text
                                                       , _prevQuery :: {-# UNPACK #-} !Text
                                                       , _chunkNumber :: {-# UNPACK #-} !Int
                                                       , _totalMatches :: {-# UNPACK #-} !Int
                                                       , _newMatches ::  !Bool
+                                                      , _done :: !Bool
                                                       , _matchSet :: !(MatchSetSized n)}
 makeLenses ''SearchStateSized
 
@@ -65,7 +62,7 @@ makeLenses ''SearchReport
 
 -- | The constant environment in which the search runs.
 data SearchEnv n a = SearchEnv { _searchFunctions :: SearchFunctions a  -- ^ The functions used to find and display matches.
-                               , _send :: forall n m. (KnownNat n , KnownNat m) => SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ()
+                               , _send :: forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
                                , _maxMatches :: Int
                                , _candidates :: Chunks n
                                , _query :: MVar (Maybe Text)
@@ -75,14 +72,6 @@ makeLenses ''SearchEnv
 {-# INLINABLE  (!) #-}
 (!) :: KnownNat n => Chunks n -> ChunkIndex -> Text
 (!) (Chunks v) (ChunkIndex i j) = V.unsafeIndex (SV.fromSized $ V.unsafeIndex v i) j
-
-{-# INLINABLE  union #-}
-union :: Int -> MatchSetSized n -> MatchSetSized n -> MatchSetSized n
-union n (MatchSetG s1) (MatchSetG s2) = MatchSetG (DS.take n $ DS.union s1 s2)
-
-{-# INLINE  isNull #-}
-isNull :: MatchSetSized n -> Bool
-isNull (MatchSetG s) = DS.null s
 
 {-# INLINE  getChunk #-}
 getChunk :: Int -> Chunks n -> SV.Vector n Text
@@ -102,7 +91,7 @@ matchChunkM fun m = go
       where
         doMatching mbv = freezeAndDone =<< U.ifoldM' collectAndWrite DS.empty (S.fromSized i)
           where
-            freezeAndDone mset = ( , MatchSetG mset) <$> S.unsafeFreeze mbv
+            freezeAndDone mset = ( , mset) <$> S.unsafeFreeze mbv
             collectAndWrite x _ (Bit False) = pure x
             collectAndWrite x j (Bit True)
               | Nothing   <- res   = pure x
@@ -126,14 +115,14 @@ searchNextChunk env matcher state = nextstate . getMatches =<< M.read (env ^. al
     getMatches = matchChunk (env ^. searchFunctions . match) matcher i (getChunk i (env ^. candidates))
     nextstate (js , mtchs) = M.write (env ^. allMatches) i js $> (over chunkNumber (+ 1) . updateAndSend . mergedMatches (state ^. matchSet) $ mtchs)
       where
-        mergedMatches (MatchSetG curr) (MatchSetG new) = if not (DS.null new) && (DS.size curr < env ^. maxMatches || DS.lookupMax curr > DS.lookupMin new)
-                                                         then Just . MatchSetG . DS.take (env ^. maxMatches) . DS.union curr $ new else Nothing
-        updateAndSend = over totalMatches (+ (DS.size . matchset $ mtchs)) . maybe (set newMatches False state) (\mset -> set newMatches True (set matchSet mset state))
+        mergedMatches curr new = if not (DS.null new) && (DS.size curr < env ^. maxMatches || DS.lookupMax curr > DS.lookupMin new)
+                                                         then Just . DS.take (env ^. maxMatches) . DS.union curr $ new else Nothing
+        updateAndSend = over totalMatches (+ DS.size mtchs) . maybe (set newMatches False state) (\mset -> set newMatches True (set matchSet mset state))
 
 matcherLoop :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> Text -> MatcherSized m a -> IO (Maybe Text)
 matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
   where
-    initstate = SearchStateSized qry prev 0 0 False (MatchSetG DS.empty)
+    initstate = SearchStateSized qry prev 0 0 False False DS.empty
     loop state = step =<< tryTakeMVar (env ^. query)
       where
         step x
@@ -143,10 +132,10 @@ matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
           | otherwise              = doSend QueryDone *> takeMVar (env ^. query)
           where
             report b = SearchReport b (state ^. newMatches) (state ^. totalMatches) qry
-            doSend b = (env ^. send) (report b) (env ^. candidates) matcher (state ^. matchSet)
+            doSend b = (env ^. send) (env ^. candidates) (report b) matcher (state ^. matchSet)
             inrange = state ^. chunkNumber < (V.length . chunks $ env ^. candidates)
 
-searchEnv :: KnownNat n => SearchFunctions a -> Int -> (forall n m. (KnownNat n , KnownNat m) => SearchReport -> Chunks n -> MatcherSized m a -> MatchSetSized m -> IO ())
+searchEnv :: KnownNat n => SearchFunctions a -> Int -> (forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ())
   -> Chunks n -> IO (SearchEnv n a)
 searchEnv funs n sender chks = SearchEnv funs sender n chks <$> newEmptyMVar <*> M.replicate (V.length . chunks $ chks) (S.replicate 1)
 
@@ -177,12 +166,12 @@ makeChunksP :: KnownNat n => Proxy n -> V.Vector Text -> Chunks n
 makeChunksP _ = makeChunks
 
 {-# INLINE matchSetToVector #-}
-matchSetToVector :: (a -> b) -> MatchSetG a -> V.Vector b
-matchSetToVector f (MatchSetG s) = ST.runST $ setToVectorST f s
+matchSetToVector :: (a -> b) -> DS.Set a -> V.Vector b
+matchSetToVector f s = ST.runST $ setToVectorST f s
 
 {-# INLINE matchSetSizedToVector #-}
 matchSetSizedToVector :: KnownNat n => MatchSetSized n -> U.Vector (ScoredMatchSized n)
-matchSetSizedToVector (MatchSetG s) = U.fromList . DS.toList $ s
+matchSetSizedToVector = U.fromList . DS.toList
 
 {-# INLINEABLE setToVectorST #-}
 setToVectorST :: (a -> b) -> DS.Set a -> ST.ST s (V.Vector b)
