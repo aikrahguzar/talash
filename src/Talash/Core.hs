@@ -1,5 +1,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# OPTIONS_GHC -Wno-duplicate-exports #-}
 -- | This modules provides the function `searchSome` for searching the candidates provided by `Vector` `Text`. The information about the location of matches
 -- is stored in a length-tagged unboxed vector `S.Vector`. Such vectors have an `Unbox` instances which allows us to store the collection of such mathces in an
 -- unboxed `U.Vector`. This significantly reduces the memory usage and pressure on garbage collector. As a result the matchers used by this function are tagged
@@ -11,11 +12,11 @@ module Talash.Core ( -- * Types
                      -- * Matchers and matching
                      , makeMatcher , emptyMatcher
                      -- ** Fuzzy style
-                     , fuzzyMatcherSized , fuzzyMatcher , fuzzyMatchSized , fuzzyMatch , fuzzyMatchParts
+                     , fuzzyMatcherSized , fuzzyMatcher , fuzzyMatchSized , fuzzyMatch , fuzzyMatchParts , fuzzyMatchPartsAs
                      -- ** Orderless Style
-                     , orderlessMatcherSized , orderlessMatcher , orderlessMatchSized , orderlessMatch , orderlessMatchParts
+                     , orderlessMatcherSized , orderlessMatcher , orderlessMatchSized , orderlessMatch , orderlessMatchParts , orderlessMatchPartsAs
                      -- * Search
-                     , fuzzySettings , orderlessSettings , parts , partsOrderless , minify) where
+                     , fuzzySettings , orderlessSettings , parts , partsAs , partsOrderless , partsOrderlessAs , minify) where
 
 import Control.Monad.ST (ST, runST)
 import qualified Data.Text as T
@@ -177,6 +178,9 @@ fuzzyMatch (Matcher m) t = parts (S.fromSized <$> sizes m) t . S.fromSized . ind
 fuzzyMatchParts :: KnownNat n => MatcherSized n MatchPart -> Text -> S.Vector n Int -> [Text]
 fuzzyMatchParts m t = parts (S.fromSized <$> sizes m) t . S.fromSized
 
+fuzzyMatchPartsAs :: KnownNat n => (Bool -> Text -> a) -> MatcherSized n MatchPart -> Text -> S.Vector n Int -> [a]
+fuzzyMatchPartsAs f m t = partsAs f (S.fromSized <$> sizes m) t . S.fromSized
+
 {-# INLINEABLE orderlessMatchSized#-}
 orderlessMatchSized :: KnownNat n => MatcherSized n Int -> Text -> Maybe (MatchFull n)
 orderlessMatchSized (MatcherSized c m l) = full . runWithCase c (MatchState 0 (S.replicate 0) (0,0)) (matchStepOrderless l) m
@@ -190,6 +194,9 @@ orderlessMatch (Matcher m) t = partsOrderless (S.fromSized <$> sizes m) t . S.fr
 orderlessMatchParts :: KnownNat n => MatcherSized n Int -> Text -> S.Vector n Int -> [Text]
 orderlessMatchParts m t = partsOrderless (S.fromSized <$> sizes m) t . S.fromSized
 
+orderlessMatchPartsAs :: KnownNat n => (Bool -> Text -> a) -> MatcherSized n Int -> Text -> S.Vector n Int -> [a]
+orderlessMatchPartsAs f m t = partsOrderlessAs f (S.fromSized <$> sizes m) t . S.fromSized
+
 -- | The parts of a string resulting from a match using the fuzzy matcher.
 parts :: Either Int (U.Vector Int) -- ^ The information about the lengths of different needles.
   -> Text -- ^ The candidate string that has been matched
@@ -202,9 +209,24 @@ parts v t u
     done (ms , cp) = unsafeSliceUtf8 0 cp t : ms
     cut  (!ms , !cp) !cc  = (unsafeSliceUtf8 cc (cp - cc) t : ms , cc )
 
+partsAs :: (Bool -> Text -> a) -> Either Int (U.Vector Int) -> Text -> U.Vector Int -> [a]
+partsAs f = go
+  where
+    go v t u
+      | U.null u  = [f False t]
+      |otherwise  =  done . foldl' cut ([] , lengthUtf8 t , False) . minify v $ u
+      where
+        done (ms , cp, b) = f b (unsafeSliceUtf8 0 cp t) : ms
+        cut  (!ms , !cp , !b) !cc  = (f b (unsafeSliceUtf8 cc (cp - cc) t) : ms , cc , not b)
+
 -- | The parts of a string resulting from a match using the orderless matcher. See parts for an explanation of arguments.
 partsOrderless :: Either Int (U.Vector Int) -> Text -> U.Vector Int -> [Text]
 partsOrderless v t u = parts (map (`U.backpermute` fst up) v) t (snd up)
+  where
+    up = U.unzip . U.modify (V.sortBy (comparing snd)) . U.imap (,) $ u
+
+partsOrderlessAs :: (Bool -> Text -> a) -> Either Int (U.Vector Int) -> Text -> U.Vector Int -> [a]
+partsOrderlessAs f v t u = partsAs f (map (`U.backpermute` fst up) v) t (snd up)
   where
     up = U.unzip . U.modify (V.sortBy (comparing snd)) . U.imap (,) $ u
 

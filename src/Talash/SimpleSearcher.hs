@@ -28,27 +28,27 @@ showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . f
     go (c , False) n = (c <> Value n , True)
     go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
 
-printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a Text -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
 printMatches funcs store r m s = when (o == QueryDone || o == NewQuery) (putStrLn $ (T.pack . show $ n) <> " Matches for this round.\n")
   where
     o = r ^. ocassion
     n = r ^. nummatches
 
-printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> MVar () -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a Text -> MVar () -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
 printMatchesMvar funcs v store r m s = when (r ^. ocassion == QueryDone) (putMVar v () *> putStrLn ((T.pack . show $ r ^. nummatches) <> " matches for this round.")
-                                                          *> traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout . (funcs ^. display) m (store ! c) $ v) s)
+                                                  *> traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout . (funcs ^. display) (const id) m (store ! c) $ v) s)
   -- when (o == QueryDone) (printMatches funcs o n store m s *> putMVar v ())
 
-simpleFuzzyEnv :: KnownNat n => Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart)
+simpleFuzzyEnv :: KnownNat n => Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart Text)
 simpleFuzzyEnv n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatches (fuzzyFunctions IgnoreCase)) . makeChunks
 
-simpleFuzzyEnvM :: KnownNat n => MVar () -> Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart)
+simpleFuzzyEnvM :: KnownNat n => MVar () -> Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart Text)
 simpleFuzzyEnvM m n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatchesMvar (fuzzyFunctions IgnoreCase) m) . makeChunks
 
-simpleFuzzyEnvMI :: KnownNat n => MVar () -> Int -> Proxy n -> Chunks n -> IO (SearchEnv n MatchPart)
+simpleFuzzyEnvMI :: KnownNat n => MVar () -> Int -> Proxy n -> Chunks n -> IO (SearchEnv n MatchPart Text)
 simpleFuzzyEnvMI m n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatchesMvar (fuzzyFunctions IgnoreCase) m)
 
-runSimpleSearcherWithEnv :: KnownNat n => SimpleSearcher -> SearchEnv n MatchPart -> IO ()
+runSimpleSearcherWithEnv :: KnownNat n => SimpleSearcher -> SearchEnv n MatchPart Text -> IO ()
 runSimpleSearcherWithEnv s env = forkIO (searchLoop env) *> traverse_ (doSearch . Just) (terms s) *> doSearch Nothing
   where
     doSearch term = putMVar (env ^. query) term *> threadDelay (sleepTime s)
@@ -56,7 +56,7 @@ runSimpleSearcherWithEnv s env = forkIO (searchLoop env) *> traverse_ (doSearch 
 runSimpleSearcher :: KnownNat n => Proxy n -> SimpleSearcher -> V.Vector Text -> IO ()
 runSimpleSearcher p s v = runSimpleSearcherWithEnv s =<< simpleFuzzyEnv (matchesToPrint s) p v
 
-runSimpleSearcherWithEnvM :: KnownNat n => SimpleSearcher -> MVar () -> SearchEnv n MatchPart -> IO ()
+runSimpleSearcherWithEnvM :: KnownNat n => SimpleSearcher -> MVar () -> SearchEnv n MatchPart Text -> IO ()
 runSimpleSearcherWithEnvM s v env = forkIO (searchLoop env) *> traverse_ doSearch (terms s) *> putMVar (env ^. query) Nothing
   where
     doSearch term = unless (term == "") $ putMVar (env ^. query) (Just term) *> takeMVar v

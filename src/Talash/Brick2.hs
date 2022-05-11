@@ -52,7 +52,7 @@ makeLenses ''AppTheme
 type AppSettings n a = AppSettingsG n a AppTheme
 
 -- | The brick widget used to display the editor and the search result.
-searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> SearcherSized m a -> Widget Bool
+searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a (Widget Bool) -> Text -> SearcherSized m a -> Widget Bool
 searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
                                                      , hBorder , listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches)]
 
@@ -70,7 +70,7 @@ defSettings = AppSettings defTheme (ReaderT (\e -> defHooks {keyHook = handleKey
                           (\r -> r ^. ocassion == QueryDone)
 
 -- | Tha app itself. `selected` and the related functions are probably more convenient for embedding into a larger program.
-searchApp ::KnownNat n => AppSettings n a -> SearchEnv n a -> App (Searcher a) (SearchEvent a) Bool
+searchApp ::KnownNat n => AppSettings n a -> SearchEnv n a (Widget Bool) -> App (Searcher a) (SearchEvent a) Bool
 searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = as , appAttrMap = am}
   where
     ad (Searcher s)                                  = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget env (th ^. prompt) $ s
@@ -87,16 +87,16 @@ searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor 
     he s _                                           = continue s
 
 -- | Run app with given settings and return the final Searcher state.
-runApp :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Searcher a)
+runApp :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Chunks n -> IO (Searcher a)
 runApp s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . Searcher . initialSearcher env $ b) (stopSearcher env))
                =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Searcher a)
+runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Handle -> IO (Searcher a)
 runAppFromHandle s f = runApp s f . getCompact <=< compact . forceChunks <=< chunksFromHandle (s ^. chunkSize)
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
-runAppFromVector :: KnownNat n =>  AppSettings n a -> SearchFunctions a -> Vector Text -> IO (Searcher a)
+runAppFromVector :: KnownNat n =>  AppSettings n a -> SearchFunctions a (Widget Bool) -> Vector Text -> IO (Searcher a)
 runAppFromVector s f = runApp s f . getCompact <=< compact . forceChunks . makeChunks
 
 
@@ -104,33 +104,33 @@ selectedElement :: KnownNat n => Chunks n -> Searcher a -> Maybe Text
 selectedElement c (Searcher s) = (map ((c !) . chunkIndex . snd) . listSelectedElement . (^. matches)) s
 
 -- | Run app and return the text of the selection if there is one else Nothing.
-selected :: KnownNat n => AppSettings n a -> SearchFunctions a -> Chunks n -> IO (Maybe Text)
+selected :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Chunks n -> IO (Maybe Text)
 selected s f = (\c -> map (selectedElement c) . runApp s f $ c) . getCompact <=< compact . forceChunks
 
 -- | Same as `selected` but reads the vector from the supplied handle.
-selectedFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Handle -> IO (Maybe Text)
 selectedFromHandle s f = selected s f <=< chunksFromHandle (s ^. chunkSize)
 
 -- | Same as `selectedFromHandle` but allows for transforming the lines read and the final vector with supplied functions. See also `readVectorHandleWith`.
-selectedFromHandleWith :: KnownNat n => (Text -> Text) -> (Vector Text -> Vector Text) -> AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromHandleWith :: KnownNat n => (Text -> Text) -> (Vector Text -> Vector Text) -> AppSettings n a -> SearchFunctions a (Widget Bool) -> Handle -> IO (Maybe Text)
 selectedFromHandleWith w t s f = selected s f . makeChunks <=< readVectorHandleWith w t
 
 -- | Another variation on `selectedFromHandle`. See `fileNamesSorted` for what happens to read vector.
-selectedFromFileNamesSorted :: KnownNat n => AppSettings n a -> SearchFunctions a -> Handle -> IO (Maybe Text)
+selectedFromFileNamesSorted :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Handle -> IO (Maybe Text)
 selectedFromFileNamesSorted s f = selected s f .  makeChunks <=< fileNamesSorted
 
 -- | Version of `selected` for file search using a simple implementation of searching file trees from "Talash.Files". Better to use either other
 -- libraries like @unix-recursive@ or external programs like @fd@ for more complicated tasks.
-selectedFromFiles :: KnownNat n => AppSettings n a -> SearchFunctions a -> [FindInDirs] -> IO (Maybe Text)
+selectedFromFiles :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> [FindInDirs] -> IO (Maybe Text)
 selectedFromFiles s f = selected s f . forceChunks . makeChunks . (flatten =<<) <=< findFilesInDirs
 
-selectedUsing :: KnownNat n => AppSettings n a -> SearchFunctions a -> (a -> Text) -> Vector a -> IO (Maybe a)
+selectedUsing :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> (a -> Text) -> Vector a -> IO (Maybe a)
 selectedUsing s f t v = map (map (unsafeIndex v) . (`elemIndex` w) =<<) . selected s f . makeChunks $ w
   where
     w = map t v
 
 -- | A version of `selected` that puts the selected text on the stdout.
-runSearch :: AppSettings 64 a -> SearchFunctions a -> IO ()
+runSearch :: AppSettings 64 a -> SearchFunctions a (Widget Bool) -> IO ()
 runSearch s f = maybe (pure ()) putStrLn =<< selected s f =<< chunksFromStream =<< I.decodeUtf8 =<< I.lines I.stdin
 
 -- | The backend for `run`

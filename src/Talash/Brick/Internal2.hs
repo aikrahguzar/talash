@@ -88,7 +88,7 @@ makeLenses ''SearcherSized
 data Searcher a = forall n. KnownNat n => Searcher {getSearcher :: SearcherSized n a}
 
 {-# INLINE generateSearchEvent #-}
-generateSearchEvent :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a -> (SearchReport -> Bool) -> BChan (SearchEvent a) -> Chunks n -> SearchReport
+generateSearchEvent :: forall n m a b. (KnownNat n , KnownNat m) => SearchFunctions a b -> (SearchReport -> Bool) -> BChan (SearchEvent a) -> Chunks n -> SearchReport
                                                                                 -> MatcherSized m a -> MatchSetSized m -> IO ()
 generateSearchEvent f p b = go
   where
@@ -104,7 +104,7 @@ data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Boo
                                , focusGainedHook :: a -> EventM Bool (Next a)}
 
 data AppSettingsG (n :: Nat) a t   =   AppSettings { _theme :: t
-                                                   , _hooks :: ReaderT (SearchEnv n a) EventHooks (Searcher a) -- ^ The event hooks which can make use of the search environment.
+                                                   , _hooks :: ReaderT (SearchEnv n a (Widget Bool)) EventHooks (Searcher a) -- ^ The event hooks which can make use of the search environment.
                                                    , _chunkSize :: Proxy n
                                                    , _maximumMatches :: Int
                                                    , _eventStrategy :: SearchReport -> Bool}
@@ -140,11 +140,11 @@ highlightAlternate f = hBox . zipWith (\b e -> if b then withAttr "Highlight" (f
 headingAndBody :: Text -> Text -> Widget n
 headingAndBody h b = withAttr "Heading" (txt h) <=> txtWrap b
 
-listWithHighlights :: (Ord n , Show n , KnownNat m , KnownNat l) => SearchEnv l a -> Text
+listWithHighlights :: (Ord n , Show n , KnownNat m , KnownNat l) => SearchEnv l a (Widget n) -> Text
                                                         -> MatcherSized m a -> Bool -> GenericList n MatchSetG (ScoredMatchSized m) -> Widget n
-listWithHighlights env c m = renderList (\s e -> vLimit 1 . hBox $ [txt (if s then c else "  ") , highlightAlternate txt . go $! e])
+listWithHighlights env c m = renderList (\s e -> vLimit 1 . hBox $ [txt (if s then c else "  ") , hBox . go $! e])
   where
-    go (ScoredMatchSized _ i v) = (env ^. searchFunctions . display) m ((env ^. candidates) ! i) v
+    go (ScoredMatchSized _ i v) = (env ^. searchFunctions . display) (\b e -> if b then withAttr "Highlight" (txt e) else txt e) m ((env ^. candidates) ! i) v
 
 columnsListWithHighlights :: (Ord n , Show n) => Text -> (a -> [[Text]]) -> [AttrName] -> [Int] -> Bool -> List n a -> Widget n
 columnsListWithHighlights c f as ls = renderList (\s e -> (txt (if s then c else "  ") <+>) . columns (highlightAlternate txt) as ls . f $! e)
@@ -189,7 +189,7 @@ renderList drawElem = renderListWithIndex $ const drawElem
 --  @Up@ , @Down@ , @PageUp@ and @PageDown@ move through the matches.
 -- All others keys are used for editing the query. See `handleEditorEvent` for details.
 {-# INLINE handleKeyEvent #-}
-handleKeyEvent :: (KnownNat n) => SearchEnv n a -> Key -> [Modifier] -> Searcher b -> EventM Bool (Next (Searcher b))
+handleKeyEvent :: (KnownNat n) => SearchEnv n a c -> Key -> [Modifier] -> Searcher b -> EventM Bool (Next (Searcher b))
 handleKeyEvent env = go
   where
     go k m s@(Searcher s')
@@ -207,7 +207,7 @@ handleKeyEvent env = go
             nq = getQuery ns'
 
 -- | The initial state of the searcher. The editor is empty.
-initialSearcher :: SearchEnv n a -> BChan (SearchEvent a) -> SearcherSized 0 a
+initialSearcher :: SearchEnv n a c -> BChan (SearchEvent a) -> SearcherSized 0 a
 initialSearcher env = SearcherSized (editorText True (Just 1) "") (list False (MatchSetG DS.empty) 0) emptyMatcher 0
 
 {-# INLINE  handleSearchSized #-}

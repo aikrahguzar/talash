@@ -66,7 +66,7 @@ data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Boo
                                , focusGainedHook :: a -> EventM Bool (Next a)}
 
 data AppSettingsG (n :: Nat) v a b t = AppSettings { _theme :: t
-                                                   , _hooks :: ReaderT (SearchEnv n a) EventHooks (SearcherG v b) -- ^ The event hooks which can make use of the search environment.
+                                                   , _hooks :: ReaderT (SearchEnv n a Text) EventHooks (SearcherG v b) -- ^ The event hooks which can make use of the search environment.
                                                    , _chunkSize :: Proxy n
                                                    , _maximumMatches :: Int
                                                    , _eventStrategy :: SearchReport -> Bool}
@@ -156,7 +156,7 @@ renderList drawElem = renderListWithIndex $ const drawElem
 --  @Up@ , @Down@ , @PageUp@ and @PageDown@ move through the matches.
 -- All others keys are used for editing the query. See `handleEditorEvent` for details.
 {-# INLINE handleKeyEvent #-}
-handleKeyEvent :: (KnownNat n) => (Text -> b) -> SearchEnv n a -> Key -> [Modifier] -> SearcherG Vector b -> EventM Bool (Next (SearcherG Vector b))
+handleKeyEvent :: (KnownNat n) => (Text -> b) -> SearchEnv n a c -> Key -> [Modifier] -> SearcherG Vector b -> EventM Bool (Next (SearcherG Vector b))
 handleKeyEvent f env = go
   where
     go k m s
@@ -173,7 +173,7 @@ handleKeyEvent f env = go
           where
             nq = getQuery ns
 
-resetSearcher :: forall n a b. (KnownNat n) => (Text -> b) -> SearchEnv n a -> SearcherG Vector b -> SearcherG Vector b
+resetSearcher :: forall n a b c. (KnownNat n) => (Text -> b) -> SearchEnv n a c -> SearcherG Vector b -> SearcherG Vector b
 resetSearcher f env = (numMatches .~ 0) . (matches .~ list False (f <$> concatChunks k (env ^. candidates)) 0)
   where
     n = natVal (Proxy :: Proxy n)

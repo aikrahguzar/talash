@@ -50,23 +50,23 @@ data SearchStateSized (n :: Nat) a = SearchStateSized { _currentQuery :: {-# UNP
                                                       , _matchSet :: !(MatchSetSized n)}
 makeLenses ''SearchStateSized
 
-data SearchFunctions a = SearchFunctions { _makeMatcher :: Text -> Matcher a
-                                         , _match :: forall n. KnownNat n => MatcherSized n a -> Text -> Maybe (MatchFull n)
+data SearchFunctions a b = SearchFunctions { _makeMatcher :: Text -> Matcher a
+                                           , _match :: forall n. KnownNat n => MatcherSized n a -> Text -> Maybe (MatchFull n)
                            -- | Given the matcher @m@, the matched string @t@ and the indices of matches in @t@ divide @t@ in alternating strings that are a matches
                            --   and the gap between these matches. The first of these is always a gap and can be empty. The rest should be non empty.
-                                         , _display :: forall n. KnownNat n => MatcherSized n a -> Text -> S.Vector n Int -> [Text] }
+                                           , _display :: forall n. KnownNat n => (Bool -> Text -> b) -> MatcherSized n a -> Text -> S.Vector n Int -> [b] }
 makeLenses ''SearchFunctions
 
 data SearchReport = SearchReport { _ocassion :: Ocassion , _hasNewMatches :: Bool , _nummatches :: Int , _searchedTerm :: Text}
 makeLenses ''SearchReport
 
 -- | The constant environment in which the search runs.
-data SearchEnv n a = SearchEnv { _searchFunctions :: SearchFunctions a  -- ^ The functions used to find and display matches.
-                               , _send :: forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
-                               , _maxMatches :: Int
-                               , _candidates :: Chunks n
-                               , _query :: MVar (Maybe Text)
-                               , _allMatches :: M.IOVector (S.Vector n Bit) }
+data SearchEnv n a b = SearchEnv { _searchFunctions :: SearchFunctions a b  -- ^ The functions used to find and display matches.
+                                 , _send :: forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+                                 , _maxMatches :: Int
+                                 , _candidates :: Chunks n
+                                 , _query :: MVar (Maybe Text)
+                                 , _allMatches :: M.IOVector (S.Vector n Bit) }
 makeLenses ''SearchEnv
 
 {-# INLINABLE  (!) #-}
@@ -102,13 +102,13 @@ matchChunkM fun m = go
                 conv (MatchFull k w) = ScoredMatchSized (Down k) (ChunkIndex ci j) w
 
 {-# INLINABLE resetMatches #-}
-resetMatches :: forall n m a. KnownNat n => SearchEnv n a -> SearchStateSized m a -> IO ()
+resetMatches :: forall n m a b. KnownNat n => SearchEnv n a b -> SearchStateSized m a -> IO ()
 resetMatches env state
   | T.isInfixOf (state ^. prevQuery) (state ^. currentQuery) = pure ()
   | otherwise                                                = M.set (env ^. allMatches) (S.replicate 1)
 
 {-# INLINABLE  searchNextChunk #-}
-searchNextChunk :: (KnownNat n , KnownNat m) => SearchEnv n a -> MatcherSized m a -> SearchStateSized m a -> IO (SearchStateSized m a)
+searchNextChunk :: (KnownNat n , KnownNat m) => SearchEnv n a b -> MatcherSized m a -> SearchStateSized m a -> IO (SearchStateSized m a)
 searchNextChunk env matcher state = nextstate . getMatches =<< M.read (env ^. allMatches) i
   where
     i          = state ^. chunkNumber
@@ -119,7 +119,7 @@ searchNextChunk env matcher state = nextstate . getMatches =<< M.read (env ^. al
                                                          then Just . DS.take (env ^. maxMatches) . DS.union curr $ new else Nothing
         updateAndSend = over totalMatches (+ DS.size mtchs) . maybe (set newMatches False state) (\mset -> set newMatches True (set matchSet mset state))
 
-matcherLoop :: (KnownNat n , KnownNat m) => SearchEnv n a -> Text -> Text -> MatcherSized m a -> IO (Maybe Text)
+matcherLoop :: (KnownNat n , KnownNat m) => SearchEnv n a b -> Text -> Text -> MatcherSized m a -> IO (Maybe Text)
 matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
   where
     initstate = SearchStateSized qry prev 0 0 False False DS.empty
@@ -135,21 +135,21 @@ matcherLoop env qry prev matcher = resetMatches env initstate *> loop initstate
             doSend b = (env ^. send) (env ^. candidates) (report b) matcher (state ^. matchSet)
             inrange = state ^. chunkNumber < (V.length . chunks $ env ^. candidates)
 
-searchEnv :: KnownNat n => SearchFunctions a -> Int -> (forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ())
-  -> Chunks n -> IO (SearchEnv n a)
+searchEnv :: KnownNat n => SearchFunctions a b -> Int -> (forall n m. (KnownNat n , KnownNat m) => Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ())
+  -> Chunks n -> IO (SearchEnv n a b)
 searchEnv funs n sender chks = SearchEnv funs sender n chks <$> newEmptyMVar <*> M.replicate (V.length . chunks $ chks) (S.replicate 1)
 
-searchLoop :: KnownNat n => SearchEnv n a -> IO ()
+searchLoop :: KnownNat n => SearchEnv n a b -> IO ()
 searchLoop env = maybe (pure ()) (`loop` "") =<< takeMVar (env ^. query)
   where
     loop qry prev
       | (Matcher m) <- (env ^. searchFunctions . makeMatcher) qry = maybe (pure ()) (`loop` qry) =<< matcherLoop env qry prev m
 
-fuzzyFunctions :: CaseSensitivity -> SearchFunctions MatchPart
-fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchParts
+fuzzyFunctions :: CaseSensitivity -> SearchFunctions MatchPart b
+fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchPartsAs
 
-orderlessFunctions :: CaseSensitivity -> SearchFunctions Int
-orderlessFunctions c = SearchFunctions (orderlessMatcher c) orderlessMatchSized orderlessMatchParts
+orderlessFunctions :: CaseSensitivity -> SearchFunctions Int b
+orderlessFunctions c = SearchFunctions (orderlessMatcher c) orderlessMatchSized orderlessMatchPartsAs
 
 {-# INLINABLE  makeChunks #-}
 makeChunks :: forall n. KnownNat n => V.Vector Text -> Chunks n
@@ -179,13 +179,13 @@ setToVectorST f s = go =<< MV.unsafeNew (DS.size s)
   where
     go mv = foldM_ (\i e -> MV.unsafeWrite mv i (f e) $> i + 1) 0 s *> V.unsafeFreeze mv
 
-startSearcher :: KnownNat n => SearchEnv n a -> IO ()
+startSearcher :: KnownNat n => SearchEnv n a b -> IO ()
 startSearcher = void . forkIO . searchLoop
 
-sendQuery :: KnownNat n => SearchEnv n a -> Text -> IO ()
+sendQuery :: KnownNat n => SearchEnv n a b -> Text -> IO ()
 sendQuery env = putMVar (env ^. query) . Just
 
-stopSearcher :: KnownNat n => SearchEnv n a -> IO ()
+stopSearcher :: KnownNat n => SearchEnv n a b -> IO ()
 stopSearcher env = putMVar (env ^. query) Nothing
 
 concatChunks :: KnownNat n => Int -> Chunks n -> V.Vector Text
