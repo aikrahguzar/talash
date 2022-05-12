@@ -1,15 +1,15 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ExistentialQuantification #-}
 
-module Talash.Brick.Internal (twoColumnText , columns , searchWidget , searchWidgetAux , headingAndBody , listWithHighlights , columnsListWithHighlights
-                             , SearcherG (..) , SearchEventG (..) , SearchEnv (..) ,  EventHooks (..) , AppSettingsG (..)
-                             , queryEditor , matches , eventSource , numMatches , theme , hooks , chunkSize , maximumMatches , eventStrategy
-                             , matchedTop , totMatches , term , getQuery , defHooks , theMain , haltQuit
-                             , handleKeyEvent , resetSearcher , handleSearch , module Export) where
+module Talash.Brick.Internal (twoColumnText , columns , searchWidget , searchWidgetAux , headingAndBody , listWithHighlights , columnsWithHighlights
+                             , MatchSetG (..) , Searcher (..) , SearchEvent (..) , SearchEnv (..) ,  EventHooks (..) , AppSettingsG (..)
+                             , SearchEventSized (..) , SearcherSized (..)
+                             , queryEditor , matches , matcher , numMatches , eventSource , theme , hooks , chunkSize , maximumMatches , eventStrategy
+                             , matchedTop , totMatches , term , getQuery , defHooks , theMain , haltQuit , initialSearcher , generateSearchEvent
+                             , handleKeyEvent , handleSearch , selectedElement , renderList , module Export) where
 
 import Brick as Export
 import Brick.BChan as Export (BChan , newBChan , writeBChan)
@@ -20,41 +20,62 @@ import Brick.Widgets.Edit  as Export (editor , editorText, renderEditor, Editor,
 import Brick.Widgets.List as Export (List, list ,handleListEvent, handleListEventVi, listAttr, listSelectedAttr, listSelectedElement , listSelectedL
                                     ,listReplace , listElements, GenericList (listElements, listSelected) , listMoveUp , listMoveDown)
 import qualified Brick.Widgets.List as L
-import Data.Vector (Vector , force , take , unsafeIndex , elemIndex)
+import qualified Data.Set as DS
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Sized as S
 import GHC.TypeLits
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
 import Graphics.Vty.Config (Config(inputFd))
 import Graphics.Vty.Input.Events as Export
-import Lens.Micro as Export (ASetter' , over, set, (^.) , _1 , _2 , _3 , (.~) , (?~) , (%~))
+import Lens.Micro as Export (ASetter' , over, set, (^.) , _1 , _2 , _3 , (.~) , (?~) , (%~) , to)
 import Lens.Micro.TH as Export ( makeLenses )
 import System.Posix.IO
 import System.Posix.Terminal
 import Talash.Chunked
+import Talash.Core hiding (makeMatcher)
 import Talash.Intro
-import Data.MonoTraversable as M
-import Talash.ScoredMatch (ScoredMatchSized)
+import Talash.ScoredMatch (ScoredMatchSized(..))
 
-data SearchEventG v a = SearchEvent  { -- | The matches received.
-                                       _matchedTop :: v a
-                                    -- | The (maximum possible) number of matches. See the note on `_numMatches`.
-                                     , _totMatches :: Int
-                                    -- | The term which was searched for.
-                                     , _term :: Text}
-makeLenses ''SearchEventG
+newtype MatchSetG a = MatchSetG (DS.Set a) deriving Foldable
 
-data SearcherG v a = Searcher { -- | The editor to get the query from.
-                             _queryEditor :: Editor Text Bool
+instance L.Splittable MatchSetG where
+  splitAt n (MatchSetG s) = (MatchSetG p , MatchSetG q)
+    where
+      (p,q) = DS.splitAt n s
+
+
+data SearchEventSized n a = SearchEventSized  { _matcherEv :: {-# UNPACK #-} !(MatcherSized n a)
+                                                -- | The (maximum possible) number of matches. See the note on `_numMatches`.
+                                              , _totMatches :: {-# UNPACK #-} !Int
+                                              -- | The term which was searched for.
+                                              , _term :: {-# UNPACK #-} !Text
+                                              , -- | The matches received.
+                                                _matchedTop :: !(MatchSetSized n)}
+makeLenses ''SearchEventSized
+
+data SearchEvent a = forall n. KnownNat n => SearchEvent (SearchEventSized n a)
+
+data SearcherSized n a = SearcherSized { -- | The editor to get the query from.
+                                    _queryEditor :: Editor Text Bool
                               -- | The matches received split up as alternating sequences of match substrings and the gap between them. The first substring is always a gap
                               --   and can be empty, the rest should be no empty.
-                            , _matches :: GenericList Bool v a
+                                  , _matches :: GenericList Bool MatchSetG (ScoredMatchSized n)
+                                  , _matcher :: MatcherSized n a
+                                  , _numMatches :: Int
                               -- | The (maximum possible) number of matches. This is the length of vector stored in `_allMatches` which also contains the indices of
                               --   which weren't matched in case enough matches were found before going through all the candidates.
-                            , _eventSource :: BChan (SearchEventG v a) -- ^ The BChan from which the app receives search events.
-                            , _numMatches :: Int
-                            }
-makeLenses ''SearcherG
+                                 , _eventSource :: BChan (SearchEvent a) -- ^ The BChan from which the app receives search events.
+                                 }
+makeLenses ''SearcherSized
+
+data Searcher a = forall n. KnownNat n => Searcher {getSearcher :: SearcherSized n a}
+
+{-# INLINE generateSearchEvent #-}
+generateSearchEvent :: forall n m a b. (KnownNat n , KnownNat m) => SearchFunctions a b -> (SearchReport -> Bool) -> BChan (SearchEvent a) -> Chunks n -> SearchReport
+                                                                                -> MatcherSized m a -> MatchSetSized m -> IO ()
+generateSearchEvent f p b = go
+  where
+    go c r m = when (p r) . writeBChan b . SearchEvent . SearchEventSized m (r ^. nummatches) (r ^. searchedTerm)
 
 -- | Event hooks are almost direct translations of the events from vty i.e. see `Event`.
 data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Bool (Next a)
@@ -65,28 +86,21 @@ data EventHooks a = EventHooks { keyHook :: Key -> [Modifier] -> a -> EventM Boo
                                , focusLostHook :: a -> EventM Bool (Next a)
                                , focusGainedHook :: a -> EventM Bool (Next a)}
 
-data AppSettingsG (n :: Nat) v a b t = AppSettings { _theme :: t
-                                                   , _hooks :: ReaderT (SearchEnv n a Text) EventHooks (SearcherG v b) -- ^ The event hooks which can make use of the search environment.
-                                                   , _chunkSize :: Proxy n
-                                                   , _maximumMatches :: Int
-                                                   , _eventStrategy :: SearchReport -> Bool}
+data AppSettingsG (n :: Nat) a b t   =   AppSettings { _theme :: t
+                                                     , _hooks :: ReaderT (SearchEnv n a b) EventHooks (Searcher a) -- ^ The event hooks which can make use of the search environment.
+                                                     , _chunkSize :: Proxy n
+                                                     , _maximumMatches :: Int
+                                                     , _eventStrategy :: SearchReport -> Bool}
 makeLenses ''AppSettingsG
-
-newtype MatchVector (n::Nat) = MatchVector (U.Vector (ScoredMatchSized n)) deriving (Eq, Ord, Show, MonoFunctor, MonoFoldable)
-type instance Element (MatchVector n) = ScoredMatchSized n
-
-newtype WrappedMatchVector (n :: Nat) a = WrappedMatchVector (WrappedMono (MatchVector n) a) deriving (MonoFunctor, MonoFoldable)
-type instance Element (WrappedMatchVector (n :: Nat) a) = ScoredMatchSized n
-data MatchList a = forall n. MatchList (GenericList Bool (WrappedMatchVector n) a)
 
 defHooks :: EventHooks a
 defHooks = EventHooks (const . const continue) (const continue) (const . const continue) (const . const . const . const continue)
                                 (const . const . const continue) continue continue
 -- | Quit without any selection.
-haltQuit :: SearcherG v a -> EventM n (Next (SearcherG v a))
-haltQuit = halt . ((matches . listSelectedL) .~ Nothing)
+haltQuit :: Searcher a -> EventM m (Next (Searcher a))
+haltQuit s@(Searcher s') = halt . Searcher . ((matches . listSelectedL) .~ Nothing) $ s'
 
-getQuery :: SearcherG v a -> Text
+getQuery :: SearcherSized n a -> Text
 getQuery s = fromMaybe "" . listToMaybe . getEditContents $ s ^. queryEditor
 
 twoColumnText :: Int -> Text -> Text -> Widget n
@@ -105,16 +119,18 @@ searchWidgetAux b p e w = hBox [withAttr "Prompt" (padLeftRight 2 . txt $ p) , p
 
 highlightAlternate :: (a -> Widget n) -> [a] -> Widget n
 highlightAlternate f = hBox . zipWith (\b e -> if b then withAttr "Highlight" (f e) else f e) (cycle [False , True])
-  -- fst . foldl' (\(!w , !b) !n  -> (w <+> if b then withAttr "Highlight" (f n) else f n , not b)) (emptyWidget , False)
 
 headingAndBody :: Text -> Text -> Widget n
 headingAndBody h b = withAttr "Heading" (txt h) <=> txtWrap b
 
-listWithHighlights :: (Ord n , Show n) => Text -> (a -> [Text]) -> Bool -> List n a -> Widget n
-listWithHighlights c f = renderList (\s e -> vLimit 1 . hBox $ [txt (if s then c else "  ") , highlightAlternate txt . f $ e , fill ' '])
+listWithHighlights :: (Ord n , Show n , KnownNat m , KnownNat l) => SearchEnv l a (Widget n) -> Text
+                                                        -> MatcherSized m a -> Bool -> GenericList n MatchSetG (ScoredMatchSized m) -> Widget n
+listWithHighlights env c m = renderList (\s e -> hBox [txt (if s then c else "  ") , hBox . go $! e])
+  where
+    go (ScoredMatchSized _ i v) = (env ^. searchFunctions . display) (\b e -> if b then withAttr "Highlight" (txt e) else txt e) m ((env ^. candidates) ! i) v
 
-columnsListWithHighlights :: (Ord n , Show n) => Text -> (a -> [[Text]]) -> [AttrName] -> [Int] -> Bool -> List n a -> Widget n
-columnsListWithHighlights c f as ls = renderList (\s e -> (txt (if s then c else "  ") <+>) . columns (highlightAlternate txt) as ls . f $! e)
+columnsWithHighlights :: Text -> (a -> [[Text]]) -> [AttrName] -> [Int] -> Bool -> a -> Widget n
+columnsWithHighlights c f as ls s e = (txt (if s then c else "  ") <+>) . columns (highlightAlternate txt) as ls . f $! e
 
 theMain :: Ord n => App b e n -> BChan e -> b -> IO b
 theMain a b s = (\v -> customMain v (pure v) (Just b) a s) =<< mkVty =<<(\c -> (\fd -> c {inputFd = Just fd}) <$> termFd) =<< standardIOConfig
@@ -156,29 +172,35 @@ renderList drawElem = renderListWithIndex $ const drawElem
 --  @Up@ , @Down@ , @PageUp@ and @PageDown@ move through the matches.
 -- All others keys are used for editing the query. See `handleEditorEvent` for details.
 {-# INLINE handleKeyEvent #-}
-handleKeyEvent :: (KnownNat n) => (Text -> b) -> SearchEnv n a c -> Key -> [Modifier] -> SearcherG Vector b -> EventM Bool (Next (SearcherG Vector b))
-handleKeyEvent f env = go
+handleKeyEvent :: (KnownNat n) => SearchEnv n a c -> Key -> [Modifier] -> Searcher b -> EventM Bool (Next (Searcher b))
+handleKeyEvent env = go
   where
-    go k m s
+    go k m s@(Searcher s')
       | k == KEnter                                  , null m = halt s
       | k == KEsc                                    , null m = haltQuit s
-      | k == KChar '\t'                              , null m = continue . over matches listMoveDown $ s
-      | k == KBackTab                                , null m = continue . over matches listMoveUp $ s
-      | k `elem` [KUp , KDown , KPageUp , KPageDown] , null m = continue =<< handleEventLensed s matches handleListEvent (EvKey k m)
-      | otherwise                                             = continue =<< liftIO . editStep =<< handleEventLensed s queryEditor handleEditorEvent (EvKey k m)
+      | k == KChar '\t'                              , null m = continue . Searcher . over matches listMoveDown $ s'
+      | k == KBackTab                                , null m = continue . Searcher . over matches listMoveUp $ s'
+      | k `elem` [KUp , KDown , KPageUp , KPageDown] , null m = continue . Searcher =<< handleEventLensed s' matches handleListEvent (EvKey k m)
+      | otherwise                                             = continue =<< liftIO . editStep . Searcher =<< handleEventLensed s' queryEditor handleEditorEvent (EvKey k m)
       where
-        editStep ns
-          | nq /= getQuery s    = if nq == "" then pure $ resetSearcher f env ns else sendQuery env nq $> ns
-          | otherwise           = pure ns
+        editStep ns@(Searcher ns')
+          | nq /= getQuery s'    = sendQuery env nq $> ns
+          | otherwise            = pure ns
           where
-            nq = getQuery ns
+            nq = getQuery ns'
 
-resetSearcher :: forall n a b c. (KnownNat n) => (Text -> b) -> SearchEnv n a c -> SearcherG Vector b -> SearcherG Vector b
-resetSearcher f env = (numMatches .~ 0) . (matches .~ list False (f <$> concatChunks k (env ^. candidates)) 0)
-  where
-    n = natVal (Proxy :: Proxy n)
-    k = 1 + (env ^. maxMatches) `div` fromInteger n
+-- | The initial state of the searcher. The editor is empty.
+initialSearcher :: SearchEnv n a c -> BChan (SearchEvent a) -> SearcherSized 0 a
+initialSearcher env = SearcherSized (editorText True (Just 1) "") (list False (MatchSetG DS.empty) 0) emptyMatcher 0
+
+{-# INLINE  handleSearchSized #-}
+handleSearchSized :: (KnownNat n , KnownNat m) => SearcherSized n a -> SearchEventSized m a -> SearcherSized m a
+handleSearchSized s e = SearcherSized (s ^. queryEditor) (list False (MatchSetG (e ^. matchedTop)) 0)
+                                      (e ^. matcherEv) (e ^. totMatches) (s ^. eventSource)
 
 {-# INLINE  handleSearch #-}
-handleSearch :: (Foldable v , L.Splittable v) => SearcherG v a -> SearchEventG v a -> EventM Bool (Next (SearcherG v a))
-handleSearch s !e = continue . (numMatches .~ e ^. totMatches) . (matches %~ listReplace (e ^. matchedTop) (Just 0)) $ s
+handleSearch :: Searcher a -> SearchEvent a -> EventM Bool (Next (Searcher a))
+handleSearch (Searcher s) (SearchEvent e) = continue . Searcher $ handleSearchSized s e
+
+selectedElement :: KnownNat n => Chunks n -> Searcher a -> Maybe Text
+selectedElement c (Searcher s) = (map ((c !) . chunkIndex . snd) . listSelectedElement . (^. matches)) s

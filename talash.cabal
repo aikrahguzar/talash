@@ -54,17 +54,16 @@ extra-source-files: CHANGELOG.md
 
 library
     exposed-modules:
-                    Talash.Brick2
+                    Talash.Brick
                     Talash.Brick.Columns
                     Talash.Chunked
                     Talash.Core
                     Talash.Files
-                    Talash.Intro
                     Talash.SimpleSearcher
                     -- Talash.Piped
 
     -- Modules included in this library but not exported.
-    other-modules: Talash.Brick.Internal Talash.ScoredMatch Talash.Brick.Internal2
+    other-modules: Talash.Brick.Internal Talash.ScoredMatch Talash.Intro
     default-extensions: DeriveGeneric OverloadedStrings NoImplicitPrelude BangPatterns TupleSections ScopedTypeVariables DeriveFunctor DataKinds KindSignatures
     other-extensions: TemplateHaskell ExistentialQuantification RankNTypes GeneralizedNewtypeDeriving
     build-depends:base                    >=  4.10.1 && < 5,
@@ -73,7 +72,6 @@ library
                   bytestring              >=  0.10.8 && < 0.12,
                   bitvec,
                   colorful-monoids        >=  0.2.1 && < 0.3,
-                  mono-traversable,
                   containers,
                   extra ,
                   mtl ,
