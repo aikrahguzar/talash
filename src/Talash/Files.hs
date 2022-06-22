@@ -14,10 +14,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
-import Talash.Intro
 import System.Posix.Directory.ByteString
 import System.Posix.Env.ByteString
 import System.Posix.Files.ByteString
+import Talash.Intro
 
 -- Configruation for the search when recursivley constructing the file tree.
 data Conf = Conf {

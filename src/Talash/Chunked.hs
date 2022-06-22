@@ -1,23 +1,17 @@
 -- |
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Talash.Chunked where
+module Talash.Chunked (module Talash.Chunked , module Export) where
 
-import Brick.Widgets.List
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
-import qualified Control.Monad.ST as ST
 import Data.Bit
-import qualified Data.ByteString.Char8 as B
-import Data.Maybe (fromJust)
-import Data.Monoid.Colorful
 import qualified Data.Set as DS
 import qualified Data.Text as T
-import Data.Text.AhoCorasick.Automaton (CaseSensitivity(..))
+import Data.Text.AhoCorasick.Automaton as Export (CaseSensitivity(..))
 import qualified Data.Vector as V
 import Data.Vector.Algorithms.Intro (sort)
 import qualified Data.Vector.Mutable as MV
@@ -26,15 +20,11 @@ import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as M
 import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
-import GHC.TypeLits
-import Lens.Micro
-import Lens.Micro.TH as Export ( makeLenses )
-import System.IO.Streams (toVector)
+import Lens.Micro.TH (makeLenses)
 import qualified System.IO.Streams as I
-import Talash.Core hiding (match , makeMatcher)
-import Talash.Files
+import Talash.Core as Export hiding (match , makeMatcher)
 import Talash.Intro hiding (splitAt)
-import Talash.ScoredMatch
+import Talash.ScoredMatch as Export
 
 newtype Chunks (n:: Nat) = Chunks { chunks ::  V.Vector (SV.Vector n Text)} deriving (Eq , Ord , Show)
 type MatchSetSized n = DS.Set (ScoredMatchSized n)
@@ -69,22 +59,22 @@ data SearchEnv n a b = SearchEnv { _searchFunctions :: SearchFunctions a b  -- ^
                                  , _allMatches :: M.IOVector (S.Vector n Bit) }
 makeLenses ''SearchEnv
 
-{-# INLINABLE  (!) #-}
+{-# INLINABLE (!) #-}
 (!) :: KnownNat n => Chunks n -> ChunkIndex -> Text
 (!) (Chunks v) (ChunkIndex i j) = V.unsafeIndex (SV.fromSized $ V.unsafeIndex v i) j
 
-{-# INLINE  getChunk #-}
+{-# INLINE getChunk #-}
 getChunk :: Int -> Chunks n -> SV.Vector n Text
 getChunk i (Chunks f) = V.unsafeIndex f i
 
 {-# INLINE matchChunk #-}
 matchChunk :: forall n m a. (KnownNat n , KnownNat m) => (MatcherSized n a -> Text -> Maybe (MatchFull n)) -> MatcherSized n a -> Int -> SV.Vector m Text
   -> S.Vector m Bit -> (S.Vector m Bit , MatchSetSized n)
-matchChunk fun m ci v i = ST.runST $ matchChunkM fun m ci v i
+matchChunk fun m ci v i = runST $ matchChunkM fun m ci v i
 
 {-# INLINEABLE matchChunkM #-}
 matchChunkM :: forall n m a s. (KnownNat n , KnownNat m) => (MatcherSized n a -> Text -> Maybe (MatchFull n)) -> MatcherSized n a -> Int -> SV.Vector m Text
-  -> S.Vector m Bit -> ST.ST s (S.Vector m Bit , MatchSetSized n)
+  -> S.Vector m Bit -> ST s (S.Vector m Bit , MatchSetSized n)
 matchChunkM fun m = go
   where
     go ci v i = doMatching =<< MS.replicate (Bit False)
@@ -151,30 +141,22 @@ fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchPa
 orderlessFunctions :: CaseSensitivity -> SearchFunctions Int b
 orderlessFunctions c = SearchFunctions (orderlessMatcher c) orderlessMatchSized orderlessMatchPartsAs
 
-{-# INLINABLE  makeChunks #-}
+{-# INLINABLE makeChunks #-}
 makeChunks :: forall n. KnownNat n => V.Vector Text -> Chunks n
-makeChunks v = Chunks $ V.generate numchunks chunk
+makeChunks v = Chunks $ V.generate numchunks (SV.force . fromJust . SV.toSized . chunk)
   where
     n = fromInteger $ natVal (Proxy :: Proxy n)
     (numchunks , remainder) = bimap (+ 1) (+ 1) . divMod (length v - 1) $ n
     chunk i
-      | i + 1 < numchunks  = fromJust . SV.toSized . V.slice (i*n) n $ v
-      | otherwise          = fromJust . SV.toSized $ V.slice (i*n) remainder v <> V.replicate (n - remainder) ""
+      | i + 1 < numchunks  = V.slice (i*n) n v
+      | otherwise          = V.slice (i*n) remainder v <> V.replicate (n - remainder) ""
 
 {-# INLINE makeChunksP #-}
 makeChunksP :: KnownNat n => Proxy n -> V.Vector Text -> Chunks n
 makeChunksP _ = makeChunks
 
-{-# INLINE matchSetToVector #-}
-matchSetToVector :: (a -> b) -> DS.Set a -> V.Vector b
-matchSetToVector f s = ST.runST $ setToVectorST f s
-
-{-# INLINE matchSetSizedToVector #-}
-matchSetSizedToVector :: KnownNat n => MatchSetSized n -> U.Vector (ScoredMatchSized n)
-matchSetSizedToVector = U.fromList . DS.toList
-
 {-# INLINEABLE setToVectorST #-}
-setToVectorST :: (a -> b) -> DS.Set a -> ST.ST s (V.Vector b)
+setToVectorST :: (a -> b) -> DS.Set a -> ST s (V.Vector b)
 setToVectorST f s = go =<< MV.unsafeNew (DS.size s)
   where
     go mv = foldM_ (\i e -> MV.unsafeWrite mv i (f e) $> i + 1) 0 s *> V.unsafeFreeze mv
@@ -203,15 +185,15 @@ chunksFromStream i = Chunks <$> (I.toVector =<< I.mapMaybe (\v -> map SV.force .
 chunksFromStreamP :: forall n. KnownNat n => Proxy n -> I.InputStream Text -> IO (Chunks n)
 chunksFromStreamP _ = chunksFromStream
 
-{-# INLINABLE  chunksFromHandle #-}
+{-# INLINABLE chunksFromHandle #-}
 chunksFromHandle :: KnownNat n => Proxy n -> Handle -> IO (Chunks n)
-chunksFromHandle p h = chunksFromStreamP p =<< I.decodeUtf8 =<< I.lines =<< I.handleToInputStream h
+chunksFromHandle p = chunksFromStreamP p <=< I.decodeUtf8 <=< I.lines <=< I.handleToInputStream
 
 readVectorHandleWith :: (Text -> Text) -- ^ The function to transform the candidates.
   -> (V.Vector Text -> V.Vector Text) -- ^ The function to apply to the constructed vector before compacting.
   -> Handle -- ^ The handle to read from
   -> IO (V.Vector Text)
-readVectorHandleWith f t h = map t $ I.toVector =<< I.map f =<< I.decodeUtf8 =<< I.lines =<< I.handleToInputStream h
+readVectorHandleWith f t = map t . I.toVector <=< I.map f <=< I.decodeUtf8 <=< I.lines <=< I.handleToInputStream
 
 fileNamesSorted :: Handle -> IO (V.Vector Text)
 fileNamesSorted = readVectorHandleWith (T.takeWhileEnd (/= '/')) (V.uniq . V.modify sort)

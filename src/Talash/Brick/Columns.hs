@@ -31,15 +31,10 @@ module Talash.Brick.Columns (-- -- * Types
                     , haltQuit , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , partsColumns , runApp' , selected' , selectedIndex') where
 
 import qualified Data.Text as T
-import Data.Text.AhoCorasick.Automaton (CaseSensitivity (..))
-import Data.Vector (Vector , force , generate , take, singleton , convert, enumFromN, unfoldrM, indexed  , elemIndex)
+import Data.Vector (elemIndex)
 import GHC.Compact (Compact , compact , getCompact)
-import GHC.TypeLits
 import Talash.Brick.Internal
-import Talash.Chunked
-import Talash.Core hiding (makeMatcher)
 import Talash.Intro hiding (on ,replicate , take)
-import Talash.ScoredMatch (ScoredMatchSized(chunkIndex, matchData))
 
 data AppTheme = AppTheme { _prompt :: Text -- ^ The prompt to display next to the editor.
                          , _columnAttrs :: [AttrName] -- ^ The attrNames to use for each column. Must have the same length or greater length than the number of columns.

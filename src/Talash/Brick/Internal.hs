@@ -17,28 +17,26 @@ import Brick.Widgets.Border as Export (border, vBorder, hBorder, borderAttr)
 import Brick.Widgets.Border.Style as Export
 import Brick.Widgets.Center as Export (vCenter, center)
 import Brick.Widgets.Edit  as Export (editor , editorText, renderEditor, Editor, handleEditorEvent, getEditContents, applyEdit )
-import Brick.Widgets.List as Export (List, list ,handleListEvent, handleListEventVi, listAttr, listSelectedAttr, listSelectedElement , listSelectedL
-                                    ,listReplace , listElements, GenericList (listElements, listSelected) , listMoveUp , listMoveDown)
+import Brick.Widgets.List as Export (Splittable (..) , List, list ,handleListEvent, handleListEventVi, listAttr, listSelectedAttr, listSelectedElement , listSelectedL
+                                    , listReplace , listElements, GenericList (listElements, listSelected) , listMoveUp , listMoveDown , slice)
 import qualified Brick.Widgets.List as L
 import qualified Data.Set as DS
+import qualified Data.Text as T
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Sized as S
-import GHC.TypeLits
 import Graphics.Vty as Export (defAttr, cyan, white, blue, withStyle, bold, brightMagenta, black, magenta, brightBlue, Attr, defaultConfig, mkVty, green, standardIOConfig)
+import qualified Graphics.Vty as V
 import Graphics.Vty.Config (Config(inputFd))
 import Graphics.Vty.Input.Events as Export
-import Lens.Micro as Export (ASetter' , over, set, (^.) , _1 , _2 , _3 , (.~) , (?~) , (%~) , to)
 import Lens.Micro.TH as Export ( makeLenses )
 import System.Posix.IO
 import System.Posix.Terminal
-import Talash.Chunked
-import Talash.Core hiding (makeMatcher)
+import Talash.Chunked as Export
 import Talash.Intro
-import Talash.ScoredMatch (ScoredMatchSized(..))
 
 newtype MatchSetG a = MatchSetG (DS.Set a) deriving Foldable
 
-instance L.Splittable MatchSetG where
+instance Splittable MatchSetG where
   splitAt n (MatchSetG s) = (MatchSetG p , MatchSetG q)
     where
       (p,q) = DS.splitAt n s
@@ -56,16 +54,12 @@ makeLenses ''SearchEventSized
 data SearchEvent a = forall n. KnownNat n => SearchEvent (SearchEventSized n a)
 
 data SearcherSized n a = SearcherSized { -- | The editor to get the query from.
-                                    _queryEditor :: Editor Text Bool
-                              -- | The matches received split up as alternating sequences of match substrings and the gap between them. The first substring is always a gap
-                              --   and can be empty, the rest should be no empty.
-                                  , _matches :: GenericList Bool MatchSetG (ScoredMatchSized n)
-                                  , _matcher :: MatcherSized n a
-                                  , _numMatches :: Int
-                              -- | The (maximum possible) number of matches. This is the length of vector stored in `_allMatches` which also contains the indices of
-                              --   which weren't matched in case enough matches were found before going through all the candidates.
-                                 , _eventSource :: BChan (SearchEvent a) -- ^ The BChan from which the app receives search events.
-                                 }
+                                        _queryEditor :: Editor Text Bool
+                                       , _matches :: GenericList Bool MatchSetG (ScoredMatchSized n)
+                                       , _matcher :: MatcherSized n a
+                                       , _numMatches :: Int
+                                       , _eventSource :: BChan (SearchEvent a) -- ^ The BChan from which the app receives search events.
+                                       }
 makeLenses ''SearcherSized
 
 data Searcher a = forall n. KnownNat n => Searcher {getSearcher :: SearcherSized n a}
@@ -125,9 +119,9 @@ headingAndBody h b = withAttr "Heading" (txt h) <=> txtWrap b
 
 listWithHighlights :: (Ord n , Show n , KnownNat m , KnownNat l) => SearchEnv l a (Widget n) -> Text
                                                         -> MatcherSized m a -> Bool -> GenericList n MatchSetG (ScoredMatchSized m) -> Widget n
-listWithHighlights env c m = renderList (\s e -> hBox [txt (if s then c else "  ") , hBox . go $! e])
+listWithHighlights env c m = renderList (\s e -> hBox [txtLine (if s then c else "  ") , hBox . go $! e])
   where
-    go (ScoredMatchSized _ i v) = (env ^. searchFunctions . display) (\b e -> if b then withAttr "Highlight" (txt e) else txt e) m ((env ^. candidates) ! i) v
+    go (ScoredMatchSized _ i v) = (env ^. searchFunctions . display) (\b e -> if b then withAttr "Highlight" (txtLine e) else txtLine e) m ((env ^. candidates) ! i) v
 
 columnsWithHighlights :: Text -> (a -> [[Text]]) -> [AttrName] -> [Int] -> Bool -> a -> Widget n
 columnsWithHighlights c f as ls s e = (txt (if s then c else "  ") <+>) . columns (highlightAlternate txt) as ls . f $! e
@@ -137,33 +131,31 @@ theMain a b s = (\v -> customMain v (pure v) (Just b) a s) =<< mkVty =<<(\c -> (
   where
     termFd = (\f -> openFd f ReadOnly Nothing (OpenFileFlags False False False False False)) =<< getControllingTerminalName
 
-drawListElements :: (Ord n, Show n, Foldable t, L.Splittable t) => Bool -> GenericList n t a -> (Int -> Bool -> a -> Widget n) -> Widget n
-drawListElements foc l drawElem =
+drawListElements :: (Ord n, Show n, Foldable t, Splittable t) => (Int -> Bool -> a -> Widget n) -> Bool -> GenericList n t a  -> Widget n
+drawListElements drawElem foc l =
     Widget Greedy Greedy $ do
         c <- getContext
-        let es = L.slice start (numPerHeight * 2) (l^.L.listElementsL)
-            idx = fromMaybe 0 (l^.listSelectedL)
+        let es = slice start (numPerHeight * 2) (l^. L.listElementsL)
+            idx = fromMaybe 0 (l^. L.listSelectedL)
             start = max 0 $ idx - numPerHeight + 1
             numPerHeight = 1 + (c^.availHeightL - 1) `div` (l^. L.listItemHeightL)
             off = start * (l^. L.listItemHeightL)
             drawElement j e =
                 let isSelected = Just j == l^.listSelectedL
                     elemWidget = drawElem j isSelected e
-                    selItemAttr = if foc
-                                  then withDefAttr L.listSelectedFocusedAttr
-                                  else withDefAttr listSelectedAttr
+                    selItemAttr = withDefAttr listSelectedAttr
                     makeVisible = if isSelected
                                   then visible . selItemAttr
                                   else id
                 in makeVisible elemWidget
-        render $ viewport (l^.L.listNameL) Vertical $
+        render $ viewport (l^. L.listNameL) Vertical $
                  translateBy (Location (0, off)) $ vBox . zipWith drawElement [start ..] . toList $ es
 
 {-# INLINE renderListWithIndex #-}
-renderListWithIndex :: (Ord n, Show n, Foldable t, L.Splittable t) => (Int -> Bool -> a -> Widget n) -> Bool -> GenericList n t a -> Widget n
-renderListWithIndex drawElem foc l = withDefAttr listAttr $ drawListElements foc l drawElem
+renderListWithIndex :: (Ord n, Show n, Foldable t, Splittable t) => (Int -> Bool -> a -> Widget n) -> Bool -> GenericList n t a -> Widget n
+renderListWithIndex drawElem foc = withDefAttr listAttr . drawListElements drawElem foc
 
-renderList :: (Foldable t, L.Splittable t, Ord n, Show n) => (Bool -> e -> Widget n) -> Bool -> GenericList n t e -> Widget n
+renderList :: (Foldable t, Splittable t, Ord n, Show n) => (Bool -> e -> Widget n) -> Bool -> GenericList n t e -> Widget n
 renderList drawElem = renderListWithIndex $ const drawElem
 
 -- | Handling of keypresses. The default bindings are
@@ -204,3 +196,9 @@ handleSearch (Searcher s) (SearchEvent e) = continue . Searcher $ handleSearchSi
 
 selectedElement :: KnownNat n => Chunks n -> Searcher a -> Maybe Text
 selectedElement c (Searcher s) = (map ((c !) . chunkIndex . snd) . listSelectedElement . (^. matches)) s
+
+txtLine :: Text -> Widget n
+txtLine s =
+    Widget Fixed Fixed $ do
+      c <- getContext
+      return $ (imageL .~ (V.text' (c^.attrL) s)) emptyResult

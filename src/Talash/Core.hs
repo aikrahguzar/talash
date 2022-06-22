@@ -18,21 +18,15 @@ module Talash.Core ( -- * Types
                      -- * Search
                      , fuzzySettings , orderlessSettings , parts , partsAs , partsOrderless , partsOrderlessAs , minify) where
 
-import Control.Monad.ST (ST, runST)
 import qualified Data.Text as T
 import Data.Text.AhoCorasick.Automaton
 import Data.Text.Utf8 hiding (indices)
-import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as M
-import qualified Data.Vector.Unboxed.Mutable.Sized as MS
 import qualified Data.Vector.Unboxed.Sized as S
-import Talash.Intro
 import GHC.TypeNats
-import Prelude (fromIntegral)
-import Lens.Micro (_1 , _2 , (^.))
-import Debug.Trace (traceShow)
+import Talash.Intro hiding (someNatVal)
 
 -- | The MatcherSized type consists of a state machine for matching a fixed number of needles. The number of matches needed is encoded in the Nat parameterzing
 --   the type. Here the purpose is to improve the memory consumption by utlizing the `Unbox` instance for sized tagged unboxed vectors from
@@ -104,7 +98,7 @@ matchScore u v
 matchStepFuzzy :: KnownNat n => Either Int (S.Vector n Int) -> MatchState n () -> Match MatchPart -> Next (MatchState n ())
 matchStepFuzzy l s@(MatchState !f !m _) (Match (CodeUnitIndex !i) (MatchPart !b !e))
   | e - b == either id S.length l - 1                                                                           = Done $ updateMatch i l s b e ()
-  | (b == 0 && f == (-1)) || (f + 1 == b && S.unsafeIndex m f + e <= i + b) || (f >= b && e > f && monotonic)   = Step $ updateMatch i l s b e ()
+  | (b == 0 && f == (-1)) || (f + 1 == b && S.unsafeIndex m f + e < i + b) || (f >= b && e > f && monotonic)    = Step $ updateMatch i l s b e ()
   | otherwise                                                                                                   = Step   s
   where
     monotonic = S.unsafeIndex m f + either (const $ e-f) (U.sum . U.slice f (e-f) . S.fromSized) l <= i

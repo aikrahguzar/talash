@@ -27,20 +27,13 @@ module Talash.Brick (-- * Types
                     , haltQuit , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , readVectorHandleWith)
 where
 
-import qualified Data.Text as T
-import Data.Vector (Vector , force , take , unsafeIndex , elemIndex)
+import Data.Monoid.Colorful as C
+import Data.Vector (unsafeIndex , elemIndex)
 import GHC.Compact (Compact , compact , getCompact)
-import System.Environment (getArgs)
+import qualified System.IO.Streams as I
 import Talash.Brick.Internal
-import Talash.Core hiding (makeMatcher , match)
 import Talash.Files
 import Talash.Intro hiding (sort, on , take)
-import Data.Monoid.Colorful as C
-import Talash.Chunked
-import GHC.TypeLits
-import Talash.ScoredMatch (ScoredMatchSized(chunkIndex, matchData))
-import Data.Text.AhoCorasick.Automaton (CaseSensitivity(..))
-import qualified System.IO.Streams as I
 
 data AppTheme = AppTheme { _prompt :: Text -- ^ The prompt to display next to the editor.
                          , _themeAttrs :: [(AttrName, Attr)]  -- ^ This is used to construct the `attrMap` for the app. By default the used attarNmaes are
@@ -53,7 +46,7 @@ type AppSettings n a = AppSettingsG n a (Widget Bool) AppTheme
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a (Widget Bool) -> Text -> SearcherSized m a -> Widget Bool
-searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ T.pack (show $ s ^. numMatches))
+searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ pack (show $ s ^. numMatches))
                                                      , hBorder , listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches)]
 
 defThemeAttrs :: [(AttrName, Attr)]

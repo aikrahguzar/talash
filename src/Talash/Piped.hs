@@ -23,15 +23,14 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Compact
-import Talash.Intro
-import System.Directory
 import System.Environment (getArgs)
 import System.Exit
 import System.IO hiding (print , putStrLn , putStr)
 import System.Posix.Files
 import System.Posix.Process
+import Talash.Brick.Internal
 import Talash.Core hiding (makeMatcher)
-import Talash.Internal
+import Talash.Intro
 
 data SearchResult = SearchResult { _query :: Maybe Text -- ^ The query that was searched for.
                                  , _allMatches :: U.Vector Int -- ^ The vector contaning the filtered indices of the candidates using the query.
