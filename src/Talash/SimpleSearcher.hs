@@ -37,7 +37,6 @@ printMatches funcs store r m s = when (o == QueryDone || o == NewQuery) (putStrL
 printMatchesMvar :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a Text -> MVar () -> Chunks n -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
 printMatchesMvar funcs v store r m s = when (r ^. ocassion == QueryDone) (putMVar v () *> putStrLn ((T.pack . show $ r ^. nummatches) <> " matches for this round.")
                                                   *> traverse_ (\(ScoredMatchSized _ c v) -> showMatchColor stdout . (funcs ^. display) (const id) m (store ! c) $ v) s)
-  -- when (o == QueryDone) (printMatches funcs o n store m s *> putMVar v ())
 
 simpleFuzzyEnv :: KnownNat n => Int -> Proxy n -> V.Vector Text -> IO (SearchEnv n MatchPart Text)
 simpleFuzzyEnv n _ = searchEnv (fuzzyFunctions IgnoreCase) n (printMatches (fuzzyFunctions IgnoreCase)) . makeChunks

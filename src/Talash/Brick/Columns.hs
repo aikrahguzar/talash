@@ -28,7 +28,7 @@ module Talash.Brick.Columns (-- -- * Types
                      -- ** SearchSettings
                     , theme , hooks
                      -- * Exposed Internals
-                    , haltQuit , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , partsColumns , runApp' , selected' , selectedIndex') where
+                    , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , partsColumns , runApp' , selected' , selectedIndex') where
 
 import qualified Data.Text as T
 import Data.Vector (elemIndex)
@@ -54,12 +54,12 @@ makeLenses ''ColumnsIso
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: (KnownNat n , KnownNat m) => AppTheme -> SearchEnv n a Text -> SearcherSized m a -> Widget Bool
-searcherWidget t env s = joinBorders . border $    searchWidgetAux True (t ^. prompt) (s ^. queryEditor) (withAttr "Stats" . txt $ (T.pack . show $ s ^. numMatches))
+searcherWidget t env s = joinBorders . border $    searchWidgetAux True (t ^. prompt) (s ^. queryEditor) (withAttr (attrName "Stats") . txt $ (T.pack . show $ s ^. numMatches))
                                         <=> hBorder  <=> joinBorders (makeColumns env "➜ " (t ^. columnAttrs) (t ^. columnLimits) (s ^. matcher) False (s ^. matches))
 
 defThemeAttrs :: [(AttrName, Attr)]
-defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , ("Prompt" , withStyle (white `on` blue) bold)
-           , ("Highlight" , withStyle (fg blue) bold) ,  ("Stats" , fg blue) ,  (borderAttr , fg cyan)]
+defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , (attrName "Prompt" , withStyle (white `on` blue) bold)
+           , (attrName "Highlight" , withStyle (fg blue) bold) ,  (attrName "Stats" , fg blue) ,  (borderAttr , fg cyan)]
 
 defTheme ::AppTheme
 defTheme = AppTheme {_prompt = "Find: " , _columnAttrs = repeat mempty , _columnLimits = repeat 50 , _themeAttrs = defThemeAttrs
@@ -75,17 +75,17 @@ searchApp :: KnownNat n => AppSettings n a -> SearchEnv n a Text -> App (Searche
 searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = as , appAttrMap = am}
   where
     ad (Searcher s)                                  = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget th env $ s
-    as s                                             = liftIO (sendQuery env "") $> s
+    as                                               = liftIO (sendQuery env "")
     am                                               = const $ attrMap defAttr (th ^. themeAttrs)
     hk                                               = runReaderT hks env
-    he s (VtyEvent (EvKey k m))                      = keyHook hk k m s
-    he s (VtyEvent (EvMouseDown i j b m))            = mouseDownHook   hk i j b m s
-    he s (VtyEvent (EvMouseUp   i j b  ))            = mouseUpHook     hk i j b   s
-    he s (VtyEvent (EvPaste     b      ))            = pasteHook       hk     b   s
-    he s (VtyEvent  EvGainedFocus       )            = focusGainedHook hk         s
-    he s (VtyEvent  EvLostFocus         )            = focusLostHook   hk         s
-    he s@(Searcher s') (AppEvent e@(SearchEvent e')) = if e' ^. term == getQuery s' then handleSearch s e else continue s
-    he s _                                           = continue s
+    he (VtyEvent (EvKey k m))                      = keyHook hk k m
+    he (VtyEvent (EvMouseDown i j b m))            = mouseDownHook   hk i j b m
+    he (VtyEvent (EvMouseUp   i j b  ))            = mouseUpHook     hk i j b
+    he (VtyEvent (EvPaste     b      ))            = pasteHook       hk     b
+    he (VtyEvent  EvGainedFocus       )            = focusGainedHook hk
+    he (VtyEvent  EvLostFocus         )            = focusLostHook   hk
+    he (AppEvent e)                                = handleSearch e
+    he _                                           = pure ()
 
 -- | This function reconstructs the columns from the parts returned by the search by finding the newlines.
 partsColumns :: [Text] -> [[Text]]
@@ -106,7 +106,7 @@ makeColumns env c as ls m = renderList (columnsWithHighlights c mp as ls)
 -- | The \'raw\' version of `runApp` taking a vector of text with columns separated by newlines.
 runApp' :: KnownNat n => AppSettings n a -> SearchFunctions a Text -> Chunks n -> IO (Searcher a)
 runApp' s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . Searcher . initialSearcher env $ b) (stopSearcher env))
-                 =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
+                 =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent (s ^. eventStrategy) b) c) =<< newBChan 8
 
 -- -- | Run app with given settings and return the final Searcher state.
 runApp :: KnownNat n => AppSettings n a  -> SearchFunctions a  Text -> Vector [Text] -> IO (Searcher a)

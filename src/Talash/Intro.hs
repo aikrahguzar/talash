@@ -26,7 +26,7 @@ import Prelude as Export hiding ((>>) , map , putStr , putStrLn)
 import Safe as Export
 import System.Environment as Export
 import System.IO as Export hiding (putStr , putStrLn)
-import Text.Read as Export hiding (lift , list)
+import Text.Read as Export hiding (lift , list , get)
 
 {-# INLINE map #-}
 map :: Functor f => (a -> b) -> f a -> f b

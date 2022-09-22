@@ -79,16 +79,19 @@ matchChunkM fun m = go
   where
     go ci v i = doMatching =<< MS.replicate (Bit False)
       where
+        nzero = natVal (Proxy :: Proxy n) == 0
         doMatching mbv = freezeAndDone =<< U.ifoldM' collectAndWrite DS.empty (S.fromSized i)
           where
+            umbv = MS.fromSized mbv
             freezeAndDone mset = ( , mset) <$> S.unsafeFreeze mbv
             collectAndWrite x _ (Bit False) = pure x
             collectAndWrite x j (Bit True)
               | Nothing   <- res   = pure x
               | Just mtch <- res   = unsafeFlipBit umbv j $> DS.insert (conv mtch) x
               where
-                umbv = MS.fromSized mbv
-                res = fun m . SV.unsafeIndex v $ j
+                res
+                  | nzero      = if SV.unsafeIndex v j == "" then Nothing else fun m . SV.unsafeIndex v $ j
+                  | otherwise  = fun m . SV.unsafeIndex v $ j
                 conv (MatchFull k w) = ScoredMatchSized (Down k) (ChunkIndex ci j) w
 
 {-# INLINABLE resetMatches #-}

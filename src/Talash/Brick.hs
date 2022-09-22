@@ -24,7 +24,7 @@ module Talash.Brick (-- * Types
                      -- ** SearchSettings
                     , theme , hooks , defTheme , defHooks
                      -- * Exposed Internals
-                    , haltQuit , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , readVectorHandleWith)
+                    , handleKeyEvent , handleSearch , searcherWidget , initialSearcher , readVectorHandleWith)
 where
 
 import Data.Monoid.Colorful as C
@@ -46,12 +46,12 @@ type AppSettings n a = AppSettingsG n a (Widget Bool) AppTheme
 
 -- | The brick widget used to display the editor and the search result.
 searcherWidget :: (KnownNat n , KnownNat m) => SearchEnv n a (Widget Bool) -> Text -> SearcherSized m a -> Widget Bool
-searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr "Stats" . txt  $ pack (show $ s ^. numMatches))
+searcherWidget env p s = joinBorders . border $ vBox [searchWidgetAux True p (s ^. queryEditor) (withAttr (attrName "Stats") . txt  $ pack (show $ s ^. numMatches))
                                                      , hBorder , listWithHighlights env "➜ " (s ^. matcher) False (s ^. matches)]
 
 defThemeAttrs :: [(AttrName, Attr)]
-defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , ("Prompt" , withStyle (white `on` blue) bold)
-                , ("Highlight" , withStyle (fg blue) bold) ,  ("Stats" , fg blue) ,  (borderAttr , fg cyan)]
+defThemeAttrs = [ (listSelectedAttr, withStyle (bg white) bold) , (attrName "Prompt" , withStyle (white `on` blue) bold)
+                , (attrName "Highlight" , withStyle (fg blue) bold) ,  (attrName "Stats" , fg blue) ,  (borderAttr , fg cyan)]
 
 defTheme ::AppTheme
 defTheme = AppTheme {_prompt = "Find: " , _themeAttrs = defThemeAttrs , _borderStyle = unicodeRounded}
@@ -67,22 +67,22 @@ searchApp ::KnownNat n => AppSettings n a -> SearchEnv n a (Widget Bool) -> App 
 searchApp (AppSettings th hks _ _ _) env  = App {appDraw = ad , appChooseCursor = showFirstCursor , appHandleEvent = he , appStartEvent = as , appAttrMap = am}
   where
     ad (Searcher s)                                  = (:[]) . withBorderStyle (th ^. borderStyle) . searcherWidget env (th ^. prompt) $ s
-    as s                                             = liftIO (sendQuery env "") $> s
+    as                                               = liftIO (sendQuery env "")
     am                                               = const $ attrMap defAttr (th ^. themeAttrs)
     hk                                               = runReaderT hks env
-    he s (VtyEvent (EvKey k m))                      = keyHook hk k m s
-    he s (VtyEvent (EvMouseDown i j b m))            = mouseDownHook   hk i j b m s
-    he s (VtyEvent (EvMouseUp   i j b  ))            = mouseUpHook     hk i j b   s
-    he s (VtyEvent (EvPaste     b      ))            = pasteHook       hk     b   s
-    he s (VtyEvent  EvGainedFocus       )            = focusGainedHook hk         s
-    he s (VtyEvent  EvLostFocus         )            = focusLostHook   hk         s
-    he s@(Searcher s') (AppEvent e@(SearchEvent e')) = if e' ^. term == getQuery s' then handleSearch s e else continue s
-    he s _                                           = continue s
+    he (VtyEvent (EvKey k m))                      = keyHook hk k m
+    he (VtyEvent (EvMouseDown i j b m))            = mouseDownHook   hk i j b m
+    he (VtyEvent (EvMouseUp   i j b  ))            = mouseUpHook     hk i j b
+    he (VtyEvent (EvPaste     b      ))            = pasteHook       hk     b
+    he (VtyEvent  EvGainedFocus       )            = focusGainedHook hk
+    he (VtyEvent  EvLostFocus         )            = focusLostHook   hk
+    he (AppEvent e@(SearchEvent e'))               = handleSearch e
+    he _                                           = pure ()
 
 -- | Run app with given settings and return the final Searcher state.
 runApp :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Chunks n -> IO (Searcher a)
 runApp s f c =     (\b -> (\env -> startSearcher env *> finally (theMain (searchApp s env) b . Searcher . initialSearcher env $ b) (stopSearcher env))
-               =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent f (s ^. eventStrategy) b) c) =<< newBChan 8
+               =<< searchEnv f (s ^. maximumMatches) (generateSearchEvent (s ^. eventStrategy) b) c) =<< newBChan 8
 
 -- | Run app with a vector that contains lines read from a handle and return the final Searcher state.
 runAppFromHandle :: KnownNat n => AppSettings n a -> SearchFunctions a (Widget Bool) -> Handle -> IO (Searcher a)

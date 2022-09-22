@@ -65,7 +65,7 @@ dirContentsWith c d = bracket (openDirStream d) closeDirStream (\s -> V.unfoldrM
 -- | Constructs the file tree with the given the second argument at the root according to the given configuration.
 {-# INLINEABLE fileTreeWith #-}
 fileTreeWith :: Conf -> ByteString -> IO (FileTree Text)
-fileTreeWith c d = bracket getWorkingDirectory changeWorkingDirectory (const . catch (changeWorkingDirectory d *> (go =<< dirContentsWith c ".")) $ cex)
+fileTreeWith c d = bracket getWorkingDirectory changeWorkingDirectory (const $ changeWorkingDirectory d *> (go =<< dirContentsWith c "."))
   where
     go v = (\(a , b) -> Dir (T.decodeUtf8 d) a <$!> V.mapM (fileTreeWith c) b) . V.partitionWith (first T.decodeUtf8) $ v
     cex (_ :: SomeException) = pure $ Dir (T.decodeUtf8 d) mempty mempty
@@ -119,5 +119,6 @@ findFilesInDirs = foldr (\a t -> t <> findWithExts a) (pure mempty)
 executables :: IO (V.Vector Text)
 executables = map (V.uniq . V.modify V.sort) . foldr merge (pure V.empty) . B.split ':' =<< getEnvDefault "PATH" ""
   where
-    cl = defConf { filterPath = const False , includeFile = \ s p ->  map ((isRegularFile s || isSymbolicLink s) &&) . fileAccess p False False $ True}
+    cl = defConf { filterPath = const False , includeFile = \ s _ ->  pure $    (isRegularFile s || isSymbolicLink s)
+                                                                             && (ownerExecuteMode == intersectFileModes (fileMode s) ownerExecuteMode)}
     merge a t = t <> map (V.map (T.takeWhileEnd (/= '/')) . flatten) (fileTreeWith cl a)

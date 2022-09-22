@@ -69,7 +69,7 @@ library
     build-depends:base                    >=  4.10.1 && < 5,
                   alfred-margaret         ^>= 2.0,
                   bitvec,
-                  brick                   >=  0.60 && < 0.70,
+                  brick                   >=  1.0 && < 1.2,
                   bytestring              >=  0.10.8 && < 0.12,
                   colorful-monoids        >=  0.2.1 && < 0.3,
                   containers,
@@ -88,7 +88,7 @@ library
                   vector-algorithms       ^>= 0.8.0.3,
                   vector-sized            >=  1.4.0 && < 1.5,
                   vector-th-unbox,
-                  vty                     ^>= 5.33
+                  vty                     >= 5.36
 
     ghc-options:
     hs-source-dirs:   src
