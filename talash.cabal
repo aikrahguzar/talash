@@ -60,7 +60,7 @@ library
                     Talash.Core
                     Talash.Files
                     Talash.SimpleSearcher
-                    -- Talash.Piped
+                    Talash.Piped
 
     -- Modules included in this library but not exported.
     other-modules: Talash.Brick.Internal Talash.ScoredMatch Talash.Intro
@@ -73,6 +73,7 @@ library
                   bytestring              >=  0.10.8 && < 0.12,
                   colorful-monoids        >=  0.2.1 && < 0.3,
                   containers,
+                  directory,
                   extra,
                   ghc-compact             >=  0.1.0 && < 0.3,
                   io-streams,

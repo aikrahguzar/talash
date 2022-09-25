@@ -133,10 +133,10 @@ searchEnv :: KnownNat n => SearchFunctions a b -> Int -> (forall n m. (KnownNat 
 searchEnv funs n sender chks = SearchEnv funs sender n chks <$> newEmptyMVar <*> M.replicate (V.length . chunks $ chks) (S.replicate 1)
 
 searchLoop :: KnownNat n => SearchEnv n a b -> IO ()
-searchLoop env = maybe (pure ()) (`loop` "") =<< takeMVar (env ^. query)
+searchLoop env = maybe (pure ()) (loop "") =<< takeMVar (env ^. query)
   where
-    loop qry prev
-      | (Matcher m) <- (env ^. searchFunctions . makeMatcher) qry = maybe (pure ()) (`loop` qry) =<< matcherLoop env qry prev m
+    loop prev qry
+      | (Matcher m) <- (env ^. searchFunctions . makeMatcher) qry = maybe (pure ()) (loop qry) =<< matcherLoop env qry prev m
 
 fuzzyFunctions :: CaseSensitivity -> SearchFunctions MatchPart b
 fuzzyFunctions c = SearchFunctions (fuzzyMatcher c) fuzzyMatchSized fuzzyMatchPartsAs

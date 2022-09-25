@@ -5,83 +5,56 @@
 --   `askSearcher`. One motivation for this is be able to use this library as search backend for some searches in Emacs (though the implementation may have to wait
 --  for a massive improvement in my elisp skills).
 module Talash.Piped ( -- * Types and Lenses
-                      SearchResult (..) , query , allMatches , matches , IOPipes (..) , CaseSensitivity (..)
-                    ,  makeMatcher , lister , displayer , searchFunctionOL , searchFunctionFuzzy , searchFunctionFuzzyCustom , searchFunctionOLCustom
-                      -- * Searcher
-                    , searchLoop , runSearch , runSearchStdIn  ,  runSearchStdInDef , runSearchStdInColor , showMatch , showMatchColor
-                      -- * Seeker
+                      PipedSearcher (..) , query , allMatches , CaseSensitivity (..)
+                    --   -- * Searcher
+                    , searchLoop , runSearch , runSearchStdIn  ,  runSearchStdInDef , showMatchColor
+                    --   -- * Seeker
                     , askSearcher
-                      -- * Default program
+                    --   -- * Default program
                     , run , run'
-                      -- * Exposed Internals
-                    , response , event , withIOPipes , send , recieve
-                    , searchWithMatcher , readVectorStdIn , readVectorHandle , readVectorHandleWith , emptyIndices) where
+                    --   -- * Exposed Internals
+                    , withNamedPipes , send , recieve)
+where
 
 import qualified Data.ByteString.Char8 as B
 import Data.Monoid.Colorful
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Compact
+import System.Directory
 import System.Environment (getArgs)
 import System.Exit
 import System.IO hiding (print , putStrLn , putStr)
 import System.Posix.Files
 import System.Posix.Process
-import Talash.Brick.Internal
-import Talash.Core hiding (makeMatcher)
+import Talash.Chunked hiding (makeMatcher , send)
 import Talash.Intro
+import Lens.Micro.TH (makeLenses)
 
-data SearchResult = SearchResult { _query :: Maybe Text -- ^ The query that was searched for.
-                                 , _allMatches :: U.Vector Int -- ^ The vector contaning the filtered indices of the candidates using the query.
-                                 , _matches :: V.Vector [Text] -- ^ The matches obtained using the query.
-                                 } deriving (Show , Eq)
-makeLenses ''SearchResult
+data PipedSearcher = PipedSearcher { _inputHandle :: Handle
+                                   , _outputHandle :: Handle
+                                   , _maximumMatches :: Int
+                                   , _printStrategy :: SearchReport -> Bool
+                                   , _printer :: Handle -> [Text] -> IO ()}
+makeLenses ''PipedSearcher
 
-data IOPipes = IOPipes { input :: Handle -- ^ The handle to the named piped on which the server receives input to search for.
-                       , output :: Handle -- ^ The handle to the named piped on which the searcher outputs the search results.
-                       }
-
-response :: SearchFunction -- ^ The functions determining how to match.
-              -> V.Vector Text -- ^ The vector of candidates.
-              -> Text -- ^ The text to match
-              -> SearchResult -- ^ The last result result. This is used to determine which candidates to search among.
-              -> SearchResult
-response f v t s
-  | maybe False (`T.isInfixOf` t) (s ^. query)  = go . f v (Just t) $ s ^. allMatches
-  | otherwise                                   = go . f v (Just t) $ U.enumFromN 0 (V.length v)
+printMatches :: forall n m a. (KnownNat n , KnownNat m) => SearchFunctions a Text -> PipedSearcher -> Chunks n
+                                                                -> SearchReport -> MatcherSized m a -> MatchSetSized m -> IO ()
+printMatches funcs searcher store r m s = when ((searcher ^. printStrategy) r) (T.hPutStrLn out (T.pack . show $ r ^. nummatches) *> traverse_ doPrint s *> hFlush out)
   where
-    go (a , (_ , m)) = SearchResult (Just t) a m
+    out = searcher ^. outputHandle
+    doPrint (ScoredMatchSized _ c v) =  (searcher ^. printer) out . (funcs ^. display) (const id) m (store ! c) $ v
 
--- | One search event consisiting of the searcher reading a bytestring from the input named pipe. If the bytestring is empty the searcher exists. If not it
---   outputs the search results to the output handle and also returns them.
---
---   The first line of the output of results is the query. The second is an decimal integer @n@ which is the number of results to follow. There are @n@ more lines each
---  contaning a result presented according the function supplied.
-event :: SearchFunction -> (Handle -> [Text] -> IO ()) -- ^ The functions that determines how a results is presented. Must not introduce newlines.
-          -> IOPipes -- ^ The handles to the named pipes
-          -> V.Vector Text -- ^ The candidates
-          -> SearchResult -- ^ The last search result
-          -> IO (Maybe SearchResult) -- ^ The final result. The Nothing is for the case if the input was empty signalling that the searcher should exit.
-event f g (IOPipes i o) v s = (\t -> if T.null t then pure Nothing else go t) . T.strip . decodeUtf8Lenient =<< B.hGetLine i
+pipedEnv :: KnownNat n => SearchFunctions a Text -> PipedSearcher -> Chunks n -> IO (SearchEnv n a Text)
+pipedEnv funcs searcher = searchEnv funcs (searcher ^. maximumMatches) (printMatches funcs searcher)
+
+search :: KnownNat n => IO () -> Handle -> SearchEnv n a b -> IO ()
+search fin inp env = finally (startSearcher env *> (loop =<< T.hGetLine inp)) fin
   where
-    go t     = (\s' -> pream s' *> V.mapM_ (g o) (s' ^. matches) *> hFlush o $> Just s') . response f v t $ s
-    pream s' = B.hPutStrLn o (encodeUtf8 . fromMaybe "" $ s' ^. query) *> B.hPutStrLn o (B.pack . show . V.length $ s' ^. matches)
-
--- | Starts with the dummy `initialSearchResult` and handles `event` in a loop until the searcher receives an empty input and exits.
-searchLoop :: SearchFunction -> (Handle -> [Text] -> IO ())  -> V.Vector Text -> IO ()
-searchLoop f g v = withIOPipes (\p -> go p . Just . initialSearchResult $ v)
-  where
-    go p = maybe (pure ()) (go p <=<  event f g p v)
-
--- | The dummy `SearchResult` use as the initial value. Contains an empty query, all the indices and no matches.
-initialSearchResult :: V.Vector Text -> SearchResult
-initialSearchResult v = SearchResult Nothing (U.enumFromN 0 (V.length v)) V.empty
-
--- | Outputs the parts of a matching candidate to handle as space separated double quoted strings alternating between a match and a gap. The first text is
--- always a gap and can be empty the rest should be non-empty
-showMatch :: Handle -> [Text] -> IO ()
-showMatch o = B.hPutStrLn o . foldl' (\b n -> b <> " \"" <> encodeUtf8 n <> "\" ") ""
+    loop ""    = stopSearcher env
+    loop query = sendQuery env query *> (loop =<< T.hGetLine inp)
 
 -- | Outputs a matching candidate for the terminal with the matches highlighted in blue. Uses the `Colored` `Text` monoid from `colorful-monoids` for coloring.
 showMatchColor :: Handle -> [Text] -> IO ()
@@ -90,17 +63,20 @@ showMatchColor o t = (hPrintColored (\h -> B.hPutStr h . encodeUtf8) o Term8 . f
     go (c , False) n = (c <> Value n , True)
     go (c , True ) n = (c <> Style Bold (Fg Blue (Value n)) , False)
 
+defSearcher :: Handle -> Handle -> PipedSearcher
+defSearcher ih oh = PipedSearcher ih oh 4096 (\r -> r ^. ocassion == QueryDone) showMatchColor
+
 -- | Run an IO action that needs two handles to named pipes by creating two named pipes, opening the handles to them performing the action
 --   and then cleaning up by closing the handles and deleting the named pipes created. The names of the pipes are printed on the stdout and are of the
 --   form @\/tmp\/talash-input-pipe@ or @\/tmp\/talash-input-pipe\<n\>@ where n is an integer for the input-pipe and @\/tmp\/talash-output-pipe@ or
 --   @\/tmp\/talash-output-pipe\<n\>@ for the output pipe. The integer @n@ will be the same for both.
-withIOPipes :: (IOPipes -> IO a) -> IO a
-withIOPipes f = doAct =<< openP =<< ifM ((||) <$> fileExist i <*> fileExist o) (go 1) ((,) <$> mkp i <*> mkp o)
+withNamedPipes :: (IO () -> Handle -> Handle -> IO a) -> IO a
+withNamedPipes f = doAct =<< openP =<< ifM ((||) <$> fileExist i <*> fileExist o) (go 1) ((,) <$> mkp i <*> mkp o)
   where
     i = "/tmp/talash-input-pipe"
     o = "/tmp/talash-output-pipe"
-    doAct (fi , fo , p@(IOPipes ip op)) = finally (f p) (hClose ip *> hClose op *> removeFile fi *> removeFile fo)
-    openP (ip , op) = (\h g -> (ip , op , IOPipes h g)) <$> openFile ip ReadWriteMode <*> openFile op ReadWriteMode
+    doAct (fi , fo , ih , oh) = f (hClose ih *> hClose oh *> removeFile fi *> removeFile fo) ih oh
+    openP (ip , op) = (\ih oh -> (ip , op , ih , oh)) <$> openFile ip ReadWriteMode <*> openFile op ReadWriteMode
     mkp p = createNamedPipe p stdFileMode *> print p  $> p
     go n = ifM ((||) <$> fileExist i' <*> fileExist o') (go $ n + 1) ((,) <$> mkp i' <*> mkp o')
       where
@@ -108,20 +84,16 @@ withIOPipes f = doAct =<< openP =<< ifM ((||) <$> fileExist i <*> fileExist o) (
         o' = o <> show n
 
 -- | Run search create a new session for the searcher to run in, forks a process in which the `searchLoop` is run in the background and exits.
-runSearch :: SearchFunction -> (Handle -> [Text] -> IO ()) -> V.Vector Text -> IO ()
-runSearch f g v = createSession *> forkProcess (searchLoop f g v) *> exitImmediately ExitSuccess
+runSearch :: KnownNat n => IO () -> SearchFunctions a Text -> PipedSearcher -> Chunks n -> IO ()
+runSearch fin funcs searcher c = createSession *> forkProcess (search fin (searcher ^. inputHandle) =<< pipedEnv funcs searcher c) *> exitImmediately ExitSuccess
 
 -- | Version of `runSearch` in which the vector of candidates is built by reading lines from stdin.
-runSearchStdIn :: SearchFunction -> (Handle -> [Text] -> IO ()) -> IO ()
-runSearchStdIn f g = runSearch f g . getCompact =<< compact . V.force =<< readVectorStdIn
+runSearchStdIn :: KnownNat n => Proxy n -> IO () -> SearchFunctions a Text -> PipedSearcher -> IO ()
+runSearchStdIn p fin funcs searcher = runSearch fin funcs searcher . getCompact =<< compact . forceChunks =<< chunksFromHandle p stdin
 
 -- | Version of `runSearchStdIn` which uses `showMatch` to put the output on the handle.
-runSearchStdInDef :: SearchFunction  -> IO ()
-runSearchStdInDef f = runSearchStdIn f showMatch
-
--- | Version of `runSearchStdIn` for viewing the matches on a terminal which uses `showMatchColor` to put the output on the handle.
-runSearchStdInColor :: SearchFunction -> IO ()
-runSearchStdInColor f = runSearchStdIn f showMatchColor
+runSearchStdInDef :: SearchFunctions a Text -> IO ()
+runSearchStdInDef funcs = withNamedPipes (\fin ih -> runSearchStdIn (Proxy :: Proxy 32) fin funcs . defSearcher ih) -- runSearchStdIn f showMatch
 
 -- Send a query to the searcher by writing the text in the second argument to the named-pipe with path given by the first argument.
 -- Does not check if the file is a named pipe.
@@ -130,7 +102,7 @@ send i q = ifM (fileExist i) (withFile i WriteMode (`B.hPutStrLn` encodeUtf8 q))
 
 -- Read the results from the searcher from the named pipe with the path given as the argument. Does not check if the file exists or is a named pipe.
 recieve :: String -> IO ()
-recieve o = withFile o ReadMode (\h -> B.hGetLine h *> (go h . readMaybe . B.unpack =<< B.hGetLine h))
+recieve o = withFile o ReadMode (\h -> (go h . readMaybe . B.unpack =<< B.hGetLine h))
   where
     go h = maybe (putStrLn "Couldn't read the number of results.") (\n -> replicateM_ n (B.putStrLn =<< B.hGetLine h))
 
@@ -143,9 +115,9 @@ askSearcher ip op q = if q == "" then send ip q else send ip q *> recieve op
 
 -- | run' is the backend of `run` which is just `run\' =<< getArgs`
 run' :: [String] -> IO ()
-run' ["load"]               = runSearchStdInColor (searchFunctionOL IgnoreCase)
-run' ["load" , "fuzzy"]     = runSearchStdInColor (searchFunctionFuzzy IgnoreCase)
-run' ["load" , "orderless"] = runSearchStdInColor (searchFunctionOL IgnoreCase)
+run' ["load"]               = runSearchStdInDef (orderlessFunctions IgnoreCase)
+run' ["load" , "fuzzy"]     = runSearchStdInDef (fuzzyFunctions IgnoreCase)
+run' ["load" , "orderless"] = runSearchStdInDef (orderlessFunctions IgnoreCase)
 run' ["find" , x]           = askSearcher "/tmp/talash-input-pipe"  "/tmp/talash-output-pipe" . T.pack $ x
 run' ["find" , n , x]       = askSearcher ("/tmp/talash-input-pipe" <> n)  ("/tmp/talash-output-pipe" <> n) . T.pack $ x
 run' ["find" , i , o , x]   = askSearcher i o . T.pack $ x
