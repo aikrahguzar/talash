@@ -65,10 +65,10 @@ dirContentsWith c d = bracket (openDirStream d) closeDirStream (\s -> V.unfoldrM
 -- | Constructs the file tree with the given the second argument at the root according to the given configuration.
 {-# INLINEABLE fileTreeWith #-}
 fileTreeWith :: Conf -> ByteString -> IO (FileTree Text)
-fileTreeWith c d = bracket getWorkingDirectory changeWorkingDirectory (const $ changeWorkingDirectory d *> (go =<< dirContentsWith c "."))
+fileTreeWith c d = bracket getWorkingDirectory changeWorkingDirectory (const . catch (changeWorkingDirectory d *> (go =<< dirContentsWith c ".")) $ cex)
   where
-    go v = (\(a , b) -> Dir (T.decodeUtf8 d) a <$!> V.mapM (fileTreeWith c) b) . V.partitionWith (first T.decodeUtf8) $ v
-    cex (_ :: SomeException) = pure $ Dir (T.decodeUtf8 d) mempty mempty
+    go = (\(a , b) -> Dir (T.decodeUtf8 d) a <$!> V.mapM (fileTreeWith c) b) . V.partitionWith (first T.decodeUtf8)
+    cex (_ :: IOException) = pure $ Dir (T.decodeUtf8 d) mempty mempty
 
 -- | Collapses the directories with only subdirectory and no other files.
 {-# INLINEABLE minify #-}
